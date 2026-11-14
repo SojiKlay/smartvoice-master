@@ -1,0 +1,68 @@
+# Python
+__pycache__/
+.pytest_cache/
+*.py[cod]
+*.pyo
+
+# Virtual environment
+.venv/
+venv/
+env/
+
+# Environment variables (contains secrets)
+.env
+.env.*
+!.env.example
+.streamlit/secrets.toml
+.aws/
+*.pem
+*.key
+*.ppk
+credentials.json
+service-account*.json
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+*.sqlite-*
+*.sqlite3-*
+*.wav
+*.mp3
+*.m4a
+*.flac
+*.ogg
+*.smartvoice-api.json*
+data/
+
+# Local runtime data. Do not commit customer audio, transcripts, or local DBs.
+data/*.db
+data/*.sqlite
+data/raw_audio/
+data/exports/
+# scripts/compare_llm_models.py / compare_stt_models.py reports quote real calls
+data/llm_compare/
+data/stt_compare/
+data/stt_refs/
+
+# Converted CTranslate2 models (large, regenerated on first run)
+data/models/
+
+# Runtime logs
+data/logs/
+
+# Local analysis scratch files
+/_*.txt
+/_*.py
+
+# Docs output
+docs/er_diagram.png
+
+# Build artifacts
+smartvoice.egg-info/
+*.egg-info/
+.worktrees/
+.claude/
+
+# OS
+.DS_Store
+Thumbs.db
