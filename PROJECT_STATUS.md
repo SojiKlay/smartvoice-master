@@ -8,7 +8,7 @@
 
 **ยังไม่ยืนยันการทำงานกับบริการ AI จริง**: การทดสอบ API ใช้คำตอบจำลอง ยังไม่ได้ตรวจ key, เครดิต, สิทธิ์โมเดล, ความแม่นยำภาษาไทย, latency หรือค่าใช้จ่ายจริง ไม่ได้ส่งเสียงลูกค้าหรือข้อความไปยังผู้ให้บริการ ไม่ได้ deploy หรือสร้างทรัพยากร AWS
 
-GitHub repository **Private**: https://github.com/SojiKlay/smartvoice-master ผู้ใช้อนุญาต initial commit และ push แล้ว กำลังจัดส่งโค้ดที่ตรวจสอบพร้อมเอกสารนี้; ผลการ push จะบันทึกหลังยืนยัน remote
+GitHub repository **Private**: https://github.com/SojiKlay/smartvoice-master ผู้ใช้อนุญาตและ **push initial commit `df0ef44` สำเร็จแล้ว** บน branch `master` รวม 101 ไฟล์โค้ดและเอกสาร โดยไม่รวมข้อมูล runtime/credentials
 
 ## ภาพรวมและโครงสร้าง
 
@@ -131,25 +131,27 @@ py -3.11 -m venv .venv
 
 ## Git และ GitHub
 
-- Local branch: `master`; ผู้ใช้อนุญาตให้สร้าง initial commit และ push ในรอบนี้
+- Local branch: `master` ติดตาม `origin/master`; initial commit `df0ef44` push สำเร็จแล้ว เอกสารสถานะนี้อัปเดตใน commit ถัดมา
 - Remote `origin`: `https://github.com/SojiKlay/smartvoice-master.git`
 - Repository บน GitHub ตรวจเห็นป้าย **Private** ในรอบที่สร้าง; ก่อน push ตรวจ remote แล้วไม่มีประวัติเดิม
 - ส่งเฉพาะโค้ดและเอกสารที่ตรวจสอบ ไม่ส่งข้อมูล runtime และไม่สร้าง Codespace
 - ตรวจ candidate files ก่อนสร้างรายงาน 100 ไฟล์: ไม่พบรูปแบบ token/private key/credential URL ที่สแกน; ตรวจ credential assignments ที่พบเป็นค่า test, label และ bootstrap ของระบบ
 - `git check-ignore` ยืนยัน `.env`, `.env.production`, `.streamlit/secrets.toml`, หลักฐานใน `data/`, เสียง และ private key ถูก ignore; ไฟล์ `__init__.py` กลับมาอยู่ใน candidate list
-- การสแกนรูปแบบไม่รับรองว่าไม่มีข้อมูลส่วนตัวในข้อความทั่วไป ต้องตรวจ staged diff อีกครั้งก่อน initial commit/push; ไฟล์เสียง/ฐานข้อมูล/ข้อมูลลูกค้าไม่เป็นส่วนของชุดส่งต่อ
+- ตรวจเนื้อหา staged ทั้ง 101 ไฟล์ก่อน commit แล้ว ไม่พบรูปแบบ token/private key ที่ตรวจหา การสแกนรูปแบบไม่รับรองข้อมูลส่วนตัวในข้อความทั่วไปทั้งหมด; ไฟล์เสียง/ฐานข้อมูล/ข้อมูลลูกค้าไม่เป็นส่วนของชุดส่งต่อ
+- `git diff --cached --check` พบ whitespace เดิมบางจุดในเอกสาร/pages/prompts/requirements จึงคงไว้เพื่อไม่แก้โค้ดนอกขอบเขต; ไม่ใช่ test failure
+- ผล tests ล่าสุดยังเป็น 552 passed; รอบ push นี้เปลี่ยนเฉพาะเอกสารสถานะ ไม่มีการแก้ implementation เพิ่ม
 - ไม่มีการแก้ไข `.env` จริงเพื่อเปิด API และไม่มีการย้าย/ล้างข้อมูลผู้ใช้
 
 ## งานค้างและขั้นตอนถัดไป
 
 1. ผู้ใช้จัดเตรียม key/เครดิตของ pyannoteAI และ Typhoon ใน Settings หรือ `.env` เอง พร้อมอนุญาตค่าใช้จ่ายและเลือกเสียงทดสอบที่ส่งภายนอกได้ จึงจะทดสอบ live ได้
 2. เริ่มเสียงสั้นหนึ่งสาย ตรวจ transcript, ผู้พูด, summary, sentiment, QA, next action และ anomaly กับเสียงจริง แล้วจึงทดสอบชุดตัวอย่างเพิ่มเติม ถ้าลดรุ่น LLM ให้เทียบคุณภาพใหม่
-3. หลัง push ยืนยันสำเร็จ เชื่อม GitHub หรือแนบไฟล์โค้ดให้ ChatGPT บนเว็บ โดยให้สิทธิ์เข้าถึง private repository เฉพาะที่ต้องใช้
+3. Push initial commit สำเร็จแล้ว: เชื่อม GitHub หรือแนบไฟล์โค้ดให้ ChatGPT บนเว็บ โดยให้สิทธิ์เข้าถึง private repository เฉพาะที่ต้องใช้
 4. ประเมิน EC2 หลัง live test ผ่านเท่านั้น ต้องได้รับอนุญาตก่อน deploy/สร้างทรัพยากรที่มีค่าใช้จ่าย งานนี้ยังไม่ได้เตรียม deployment อัตโนมัติ
 5. ก่อนใช้งานจริงต้องวางแผน HTTPS, เปลี่ยนรหัส bootstrap, backup SQLite/เสียง, พื้นที่ดิสก์, การเข้าถึงข้อมูล, restart/worker และ concurrent users ระบบปัจจุบันยังไม่ใช่ distributed worker/queue
 
 ## ส่งต่อให้ ChatGPT Project_Smartvoice บนเว็บ
 
-แนบเอกสารนี้พร้อมโค้ดที่ผ่านการตรวจ หรือเชื่อม private repository เมื่อ push สำเร็จ การส่งลิงก์อย่างเดียวไม่ทำให้ ChatGPT มีสิทธิ์อ่าน private repo อัตโนมัติ ห้ามแนบ `.env`, credentials, `data/`, เสียงลูกค้า, checkpoints หรือฐานข้อมูลจริง
+แนบเอกสารนี้พร้อมโค้ดที่ผ่านการตรวจ หรือเชื่อม private repository ที่มีโค้ดแล้ว การส่งลิงก์อย่างเดียวไม่ทำให้ ChatGPT มีสิทธิ์อ่าน private repo อัตโนมัติ ห้ามแนบ `.env`, credentials, `data/`, เสียงลูกค้า, checkpoints หรือฐานข้อมูลจริง
 
 อ่าน `AGENTS.md` ก่อนแก้โค้ด รักษา prompts, speaker correction multi-pass, evidence validation ใน `insight_rules.py`, role guards, soft delete และ audit trail อย่าลด test เพื่อให้ผ่าน ห้ามอ้างว่า API หรือ cloud ใช้งานจริงแล้วจากผล mock tests เป้าหมายถัดไปคือยืนยัน live integration ที่ได้รับอนุญาต ไม่ใช่ redesign ระบบทั้งหมด
