@@ -23,14 +23,12 @@ from smartvoice.auth import (
     role_label,
 )
 from smartvoice.config import (
-    WHISPER_MODEL,
-    OLLAMA_MODEL,
     MOCK_STT,
     PROCESSING_STALE_MINUTES,
     api_settings,
 )
 from smartvoice.logger import get_logger
-from smartvoice.preflight import get_ollama_readiness
+from smartvoice.preflight import get_llm_readiness
 
 log = get_logger(__name__)
 
@@ -399,16 +397,17 @@ def render_sidebar_info():
     if role != "Admin":
         return
     with st.sidebar:
-        settings = api_settings()
+        try:
+            settings = api_settings()
+        except ValueError as exc:
+            st.warning(str(exc))
+            return
         st.markdown("---")
         if MOCK_STT:
             st.caption("STT Mode: **Mock STT**")
-        elif settings["stt_provider"] == "pyannote_api":
-            st.caption(f"STT API: `{settings['stt_model']}` / `{settings['pyannote_model']}`")
         else:
-            short = WHISPER_MODEL.split("/")[-1] if "/" in WHISPER_MODEL else WHISPER_MODEL
-            st.caption(f"STT Mode: **Whisper ({short})**")
-        st.caption(f"LLM: `{settings['typhoon_model'] if settings['llm_provider'] == 'typhoon' else OLLAMA_MODEL}`")
+            st.caption(f"STT API: `{settings['stt_model']}` / `{settings['pyannote_model']}`")
+        st.caption(f"LLM: `{settings['typhoon_model']}`")
 
 
 def bootstrap_app():
@@ -653,8 +652,8 @@ _queue_running = False
 
 def launch_processing(call_id: int) -> None:
     """Run pipeline.process_call in a background thread."""
-    ollama_ready, _ = get_ollama_readiness()
-    if not ollama_ready:
+    llm_ready, _ = get_llm_readiness()
+    if not llm_ready:
         return
     with _processing_lock:
         call = db.get_call_by_id(call_id)
@@ -680,8 +679,8 @@ def launch_processing(call_id: int) -> None:
 
 def launch_processing_queue(call_ids: list) -> list | None:
     """Process a list of calls sequentially in a single background thread."""
-    ollama_ready, _ = get_ollama_readiness()
-    if not ollama_ready:
+    llm_ready, _ = get_llm_readiness()
+    if not llm_ready:
         return None
     global _queue_running
     with _queue_lock:

@@ -1,4 +1,4 @@
-"""Compare Ollama models on the analysis step — without touching the database.
+"""Compare Typhoon API models on the analysis step — without touching the database.
 
 Re-runs the 4 analyses (`ollama_client.analyze_transcript`: summary/topic,
 sentiment, agent QA + next action, anomaly) on transcripts that are already in
@@ -10,11 +10,11 @@ rules in `insight_rules` were tuned on Typhoon 8B's habits, so a new model has
 to be read call by call, not just timed.
 
 Usage:
-    # Current OLLAMA_MODEL vs the candidate, every processed call
-    python scripts/compare_llm_models.py --models scb10x/llama3.1-typhoon2-8b-instruct scb10x/typhoon2.1-gemma3-12b
+    # Current TYPHOON_MODEL vs the candidate, every processed call
+    python scripts/compare_llm_models.py --allow-api --models typhoon-v2.5-30b-a3b-instruct typhoon-v2.1-12b-instruct
 
     # A quick sample
-    python scripts/compare_llm_models.py --models A B --limit 3
+    python scripts/compare_llm_models.py --allow-api --models A B --limit 3
 
 Output (default `data/llm_compare/<timestamp>/`, gitignored with the rest of data/):
     report.md   per-model speed, JSON failures, rule rejections, agreement, and every call side by side
@@ -40,8 +40,6 @@ for _stream in (sys.stdout, sys.stderr):
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
-
-import requests  # noqa: E402
 
 from smartvoice import labels, ollama_client  # noqa: E402
 
@@ -154,42 +152,11 @@ def summarize_result(result: dict) -> dict:
     }
 
 
-def _ollama(path: str, payload: dict | None = None, method: str = "post") -> dict:
-    url = f"{ollama_client._base_url()}{path}"
-    response = requests.post(url, json=payload, timeout=600) if method == "post" else requests.get(url, timeout=30)
-    response.raise_for_status()
-    return response.json()
-
-
-def gpu_share(model: str) -> str:
-    """How much of the loaded model sits in VRAM (from Ollama's /api/ps)."""
-    try:
-        for m in _ollama("/api/ps", method="get").get("models", []):
-            if m.get("name", "").startswith(model) or m.get("model", "").startswith(model):
-                size, vram = m.get("size") or 0, m.get("size_vram") or 0
-                share = f"{vram / size:.0%}" if size else "?"
-                return f"{size / 1e9:.1f} GB loaded, {share} on GPU"
-    except requests.RequestException:
-        pass
-    return "unknown"
-
-
-def unload(model: str) -> None:
-    """Free VRAM before the next model loads, so each model is timed alone."""
-    try:
-        _ollama("/api/generate", {"model": model, "keep_alive": 0})
-    except requests.RequestException:
-        pass
-
-
 def run_model(model: str, calls: list[dict], progress=print) -> dict:
     """Analyse every call with `model`. Returns per-call rows and run totals."""
-    os.environ["OLLAMA_MODEL"] = model
-    # Load the model first so the first call's time doesn't include loading it.
-    load_start = time.time()
-    _ollama("/api/generate", {"model": model, "prompt": "", "keep_alive": "10m"})
-    load_seconds = time.time() - load_start
-    memory = gpu_share(model)
+    os.environ["TYPHOON_MODEL"] = model
+    load_seconds = 0
+    memory = "remote API"
 
     log = RequestLog()
     rows, rejections = [], 0
@@ -205,7 +172,6 @@ def run_model(model: str, calls: list[dict], progress=print) -> dict:
                    "seconds": round(seconds, 1), "rejected": "; ".join(rejected)}
             rows.append(row)
             progress(f"  [{model}] {i}/{len(calls)} call {call['id']} — {seconds:.0f}s")
-    unload(model)
     total = sum(r["seconds"] for r in rows)
     return {
         "model": model,
@@ -294,13 +260,16 @@ def write_csv(runs: list[dict], path: Path) -> None:
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--models", nargs="+", required=True, help="Ollama model names, the current one first")
+    parser.add_argument("--models", nargs="+", required=True, help="Typhoon API model names; sends transcripts to the paid API")
     parser.add_argument("--db", default=os.getenv("DB_PATH", "data/smartvoice.db"))
     parser.add_argument("--limit", type=int, help="only the first N processed calls")
     parser.add_argument("--calls", type=int, nargs="+", help="only these call ids")
     parser.add_argument("--out", help="output folder (default data/llm_compare/<timestamp>)")
+    parser.add_argument("--allow-api", action="store_true", help="authorize paid API requests with stored transcripts")
     args = parser.parse_args(argv)
 
+    if not args.allow_api:
+        parser.error("Pass --allow-api to authorize sending transcripts to the paid Typhoon API")
     calls = load_calls(args.db, args.limit, args.calls)
     if not calls:
         print("ไม่มีสายที่ประมวลผลเสร็จและมีบทสนทนา — ไม่มีอะไรให้เทียบ")

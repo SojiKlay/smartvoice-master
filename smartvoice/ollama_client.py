@@ -1,5 +1,4 @@
 import json
-import os
 import re
 import requests
 
@@ -9,20 +8,8 @@ from smartvoice.logger import get_logger
 
 log = get_logger(__name__)
 
-DEFAULT_BASE_URL = "http://localhost:11434"
-DEFAULT_MODEL = "scb10x/llama3.1-typhoon2-8b-instruct"
-
-
 class APIError(RuntimeError):
     pass
-
-
-def _base_url() -> str:
-    return os.getenv("OLLAMA_BASE_URL", DEFAULT_BASE_URL).rstrip("/")
-
-
-def _model() -> str:
-    return os.getenv("OLLAMA_MODEL", DEFAULT_MODEL)
 
 
 def _normalize_llm_output(raw: str) -> str:
@@ -32,48 +19,13 @@ def _normalize_llm_output(raw: str) -> str:
     return raw.strip()
 
 
-def _num_ctx() -> int:
-    """Context window sent with every request.
-
-    Ollama silently drops the *start* of a prompt that exceeds its context
-    window, and its default differs between installs (2048-8192). The QA
-    prompt plus a long call needs ~8k tokens, so it is set explicitly.
-    """
-    try:
-        return max(4096, int(os.getenv("OLLAMA_NUM_CTX", "12288")))
-    except ValueError:
-        return 12288
-
-
 def chat(
     system_prompt: str, user_prompt: str, *, temperature: float = 0, json_mode: bool = False
 ) -> str:
     # Each request can take a minute — the Admin stop button takes effect here.
     processing_control.check()
     settings = api_settings()
-    if settings["llm_provider"] == "typhoon":
-        return _chat_typhoon(system_prompt, user_prompt, temperature, settings)
-    url = f"{_base_url()}/api/chat"
-    payload = {
-        "model": _model(),
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
-        ],
-        "stream": False,
-        "options": {"temperature": temperature, "num_ctx": _num_ctx()},
-    }
-    if json_mode:
-        # Constrains decoding to a JSON object — no prose around it to strip.
-        payload["format"] = "json"
-        # Cap the answer: in JSON mode the model sometimes repeats list items
-        # until the 600 s timeout (one real QA request hung for 10 minutes).
-        # Every analysis answer fits well inside this.
-        payload["options"]["num_predict"] = 1500
-    response = requests.post(url, json=payload, timeout=600)
-    response.raise_for_status()
-    data = response.json()
-    return data["message"]["content"]
+    return _chat_typhoon(system_prompt, user_prompt, temperature, settings)
 
 
 def _chat_typhoon(system_prompt: str, user_prompt: str, temperature: float, settings: dict) -> str:

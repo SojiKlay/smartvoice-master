@@ -19,27 +19,7 @@ def _get_float(name: str, default: str) -> float:
     except (TypeError, ValueError):
         return float(default)
 
-# ── STT ──────────────────────────────────────────────────────────────────
-WHISPER_MODEL = os.getenv("WHISPER_MODEL", "biodatlab/distill-whisper-th-large-v3")
-WHISPER_BACKEND = os.getenv("WHISPER_BACKEND", "transformers")
-WHISPER_DEVICE = os.getenv("WHISPER_DEVICE", "auto")
-WHISPER_COMPUTE = os.getenv("WHISPER_COMPUTE", "auto")
-WHISPER_BEAM_SIZE = _get_int("WHISPER_BEAM_SIZE", "5")
-WHISPER_HOTWORDS = os.getenv("WHISPER_HOTWORDS", "")
-WHISPER_VAD_FILTER = _get_bool("WHISPER_VAD_FILTER", "false")
-WHISPER_CONDITION_ON_PREVIOUS_TEXT = _get_bool("WHISPER_CONDITION_ON_PREVIOUS_TEXT", "false")
-WHISPER_NO_SPEECH_THRESHOLD = _get_float("WHISPER_NO_SPEECH_THRESHOLD", "0.6")
-WHISPER_LOG_PROB_THRESHOLD = _get_float("WHISPER_LOG_PROB_THRESHOLD", "-1.0")
-WHISPER_COMPRESSION_RATIO_THRESHOLD = _get_float("WHISPER_COMPRESSION_RATIO_THRESHOLD", "2.4")
-WHISPER_PATIENCE = _get_float("WHISPER_PATIENCE", "1.2")
-DENOISE_ENABLED = _get_bool("DENOISE_ENABLED", "true")
-DENOISE_PROP_DECREASE = _get_float("DENOISE_PROP_DECREASE", "0.35")
-HF_TOKEN = os.getenv("HF_TOKEN", "")
 MOCK_STT = _get_bool("MOCK_STT", "false")
-
-# ── LLM ──────────────────────────────────────────────────────────────────
-OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "scb10x/llama3.1-typhoon2-8b-instruct")
 
 # ── Reports ──────────────────────────────────────────────────────────────
 # Thai TrueType font for the Dashboard PDF. Blank = use the first one found
@@ -64,12 +44,12 @@ PROCESSING_STALE_MINUTES = _get_int("PROCESSING_STALE_MINUTES", "180")
 
 
 def api_settings() -> dict:
-    stt_provider = os.getenv("STT_PROVIDER", "local").strip().lower()
-    llm_provider = os.getenv("LLM_PROVIDER", "ollama").strip().lower()
-    if stt_provider not in {"local", "pyannote_api"}:
-        raise ValueError("STT_PROVIDER must be local or pyannote_api")
-    if llm_provider not in {"ollama", "typhoon"}:
-        raise ValueError("LLM_PROVIDER must be ollama or typhoon")
+    stt_provider = os.getenv("STT_PROVIDER", "pyannote_api").strip().lower()
+    llm_provider = os.getenv("LLM_PROVIDER", "typhoon").strip().lower()
+    if stt_provider != "pyannote_api":
+        raise ValueError("Local STT was removed; set STT_PROVIDER=pyannote_api in Settings")
+    if llm_provider != "typhoon":
+        raise ValueError("Local LLM was removed; set LLM_PROVIDER=typhoon in Settings")
     return {
         "stt_provider": stt_provider,
         "llm_provider": llm_provider,

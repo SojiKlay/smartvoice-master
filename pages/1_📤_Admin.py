@@ -6,9 +6,8 @@ st.set_page_config(page_title="SmartVoice — อัปโหลดและป�
 from smartvoice import audit as audit_trail
 from smartvoice import case_workflow, db, file_manager, labels, processing_control
 from smartvoice.auth import PAGE_ADMIN, role_label
-from smartvoice.config import api_settings
 from smartvoice.file_manager import extract_direction_from_filename
-from smartvoice.preflight import get_ollama_readiness, get_pyannote_access_readiness, ollama_setup_lines
+from smartvoice.preflight import get_llm_readiness, get_pyannote_access_readiness
 from smartvoice.ui_helpers import (
     audit,
     current_case_actor,
@@ -188,22 +187,20 @@ st.subheader("2. ประมวลผลสาย")
 # (the Admin list below is capped to "latest N" via a user picker — these
 #  counts always reflect the WHOLE table, not the capped subset)
 _counts = db.count_calls_by_status()
-ollama_ready, ollama_detail = get_ollama_readiness()
-processing_blocked = not ollama_ready
-if api_settings()["stt_provider"] == "pyannote_api":
-    speech_ready, speech_detail = get_pyannote_access_readiness()
-    processing_blocked = processing_blocked or not speech_ready
-    if not speech_ready:
-        st.warning(f"บริการเสียง API ยังไม่พร้อม ({speech_detail}) — ตรวจการตั้งค่า API")
+llm_ready, llm_detail = get_llm_readiness()
+processing_blocked = not llm_ready
+speech_ready, speech_detail = get_pyannote_access_readiness()
+processing_blocked = processing_blocked or not speech_ready
+if not speech_ready:
+    st.warning(f"บริการเสียง API ยังไม่พร้อม ({speech_detail}) — ตรวจการตั้งค่า API")
 
-if processing_blocked:
+if not llm_ready:
     st.error(
         "ยังประมวลผลไม่ได้ เพราะบริการวิเคราะห์ข้อความยังไม่พร้อม "
-        f"({ollama_detail})"
+        f"({llm_detail})"
     )
     st.markdown("**วิธีเตรียมบริการวิเคราะห์ข้อความ**")
-    for line in ollama_setup_lines():
-        st.markdown(line)
+    st.markdown("ตั้งค่า TYPHOON_API_KEY และ TYPHOON_MODEL ในหน้าตั้งค่า แล้วเปิดโปรแกรมใหม่")
 
 col1, col2, col3, col4 = st.columns(4)
 with col1:

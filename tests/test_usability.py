@@ -152,7 +152,7 @@ def test_admin_page_survives_a_warranty_without_a_period(temp_db):
     call_id = db.insert_call("x-0899999999-Inbound.wav", "hash-x", "data/none.wav")
     db.link_call_customer(call_id, customer_id, warranty_id)
 
-    with mock.patch("smartvoice.preflight.get_ollama_readiness", return_value=(True, "ok")):
+    with mock.patch("smartvoice.preflight.get_llm_readiness", return_value=(True, "ok")):
         at = _signed_in(AppTest.from_file("pages/1_📤_Admin.py", default_timeout=30))
         at.run()
 

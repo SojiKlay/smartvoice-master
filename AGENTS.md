@@ -1,5 +1,7 @@
 # AGENTS.md — Guide for AI Coding Agents
 
+> API-only update (2026-11-15, PM request): Local Whisper/Pyannote inference and Ollama execution have been removed. Use pyannoteAI + Typhoon APIs only; older local-model guidance below is historical. `requirements.txt` installs API dependencies. `ollama_client.py` keeps its import name for compatibility but calls Typhoon only. Do not restore local model dependencies or launchers. `MOCK_STT` mocks speech only; LLM still requires an API key. Retired local-inference/configuration tests were replaced with API-only checks; retain business-rule tests. `tests/test_config.py` now contains only pure text/grouping tests, with no torch or real DB initialization. Existing data, `.env`, installed packages and model caches must not be deleted. See SETUP.md for migration.
+
 คู่มือสำหรับ AI agents (Cascade, Claude Code, Cursor, etc.) ที่ทำงานบน codebase นี้
 อ่านไฟล์นี้ก่อนเริ่มแก้งานใหญ่ทุกครั้ง
 

@@ -1,5 +1,47 @@
 # SmartVoice — สถานะสำหรับพัฒนาต่อ
 
+## สถานะปัจจุบัน — API เท่านั้น (15 พฤศจิกายน 2026)
+
+ตามคำสั่ง PM ถอดการรันโมเดล AI Local ออก: Whisper/Pyannote บนเครื่อง, Ollama transport, GPU/CUDA helpers และ dependencies ที่เกี่ยวข้อง ตัวติดตั้ง `run.bat`/`run.sh`, `requirements.txt`, `pyproject.toml` ใช้ชุด API เท่านั้น
+
+- เสียงใช้ pyannoteAI API (Whisper Turbo + Precision-2/3); ข้อความใช้ Typhoon API ค่าเริ่มต้น `STT_PROVIDER=pyannote_api`, `LLM_PROVIDER=typhoon`
+- Settings ตัด Local provider, Whisper backend/device/compute, HuggingFace token และ Ollama URL/model ออก คง API keys/model, Discord และเสียงตัวอย่าง
+- `.env` รุ่นเดิมที่ตั้ง `local`/`ollama` จะได้รับข้อความให้เปิด Settings และบันทึกโหมด API; ไม่มีการเปลี่ยน provider หรือแก้ `.env` จริงอัตโนมัติ
+- `MOCK_STT=true` ใช้เสียงตัวอย่างแทน STT เท่านั้น การวิเคราะห์ยังเรียก Typhoon และมีค่าใช้บริการ
+- `smartvoice/stt/transcribe.py` และ `scripts/compare_stt_models.py` ถูกถอดออก ส่วน helpers จัดข้อความ/label ที่ไม่โหลดโมเดลยังอยู่
+- `scripts/compare_llm_models.py` เปลี่ยนเป็นเปรียบเทียบ Typhoon API และต้องใช้ `--allow-api` เพื่อส่ง transcript ไปยังบริการที่มีค่าใช้จ่าย
+- คงชื่อโมดูล `ollama_client.py` เพื่อให้ imports เดิมทำงาน แต่ transport ใช้ Typhoon API เท่านั้น
+- ฐานข้อมูล, pipeline, prompts, insight rules, สิทธิ์และข้อมูลลูกค้าไม่มีการเปลี่ยน ไม่มีการลบข้อมูล Local, `.env`, แพ็กเกจที่ติดตั้ง หรือ model cache
+- ยังไม่ได้ deploy Cloud, ย้าย SQLite เป็น PostgreSQL, ย้ายไฟล์ไป Object Storage หรือเรียกบริการ AI จริง
+
+### ผลตรวจสอบรอบนี้
+
+- Tests ใหม่ก่อน implementation ล้มเหลวครบ 5 กรณีตามคาด จากค่าเริ่มต้น Local, การยอมรับ provider เก่า, imports และ dependencies Local
+- หลังถอด Local: 532 passed (เว้น test_config.py ตามแนวทางเดิม)
+- รอบสุดท้าย: **541 passed in 85.42s** รันทั้ง `tests/` รวม test_config.py ที่เหลือเฉพาะ pure helpers; ใช้ API จำลองและ keys สำหรับทดสอบ ไม่ใช่บัญชีจริง
+- จำนวน tests เปลี่ยนจาก baseline เพราะถอด tests เฉพาะ Local inference/Whisper combo/Local STT benchmark และแทนด้วย API-only, readiness, legacy Settings migration, missing-key และ launcher checks ไม่ได้ลด tests ของกฎธุรกิจ
+- `pip check`: No broken requirements found; Python source 49 ไฟล์ parse ผ่าน
+- ไม่ได้รันตัวติดตั้งจริงหรือทดสอบ Python ทุกเวอร์ชัน/ทุก OS; launcher ตรวจผ่าน tests และการตรวจ source
+- ตรวจ import ใน subprocess ที่บล็อกแพ็กเกจ Local AI แล้ว pipeline/preflight/STT ยัง import ได้
+
+คำสั่งทดสอบ (กำหนดเฉพาะ environment ของ process โดยไม่แก้ .env):
+
+```powershell
+$env:STT_PROVIDER='pyannote_api'
+$env:LLM_PROVIDER='typhoon'
+$env:PYTHON_DOTENV_DISABLED='1'
+$env:TYPHOON_API_KEY='test-only'
+$env:PYANNOTE_API_KEY='test-only'
+$env:TEMP=Join-Path $PWD '.pytest_cache/temp'
+$env:TMP=$env:TEMP
+& '.venv/Scripts/python.exe' -m pytest tests/ -q --basetemp=.pytest_cache/api-only-final
+```
+
+## ประวัติการส่งต่องานก่อนเปลี่ยนเป็น API เท่านั้น
+
+ข้อความด้านล่างเป็นสถานะวันที่ 14 พฤศจิกายน 2026; แนวทาง Local ที่กล่าวถึงถูกยกเลิกโดยสถานะปัจจุบันด้านบน
+
+
 อัปเดต 14 พฤศจิกายน 2026 (Asia/Bangkok)
 
 ## สถานะที่ยืนยันได้

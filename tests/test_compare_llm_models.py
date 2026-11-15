@@ -101,17 +101,17 @@ class TestRunAndReport(unittest.TestCase):
         seen_models = []
 
         def fake_analyze(transcript):
-            seen_models.append(os.environ["OLLAMA_MODEL"])
+            seen_models.append(os.environ["TYPHOON_MODEL"])
             ollama_client.chat("s", "u")
             return _result()
 
         with mock.patch.dict(os.environ, {}), \
-             mock.patch.object(compare, "_ollama", return_value={}), \
              mock.patch.object(ollama_client, "chat", return_value="{}"), \
              mock.patch.object(ollama_client, "analyze_transcript", side_effect=fake_analyze):
             run = compare.run_model("new-model", calls, progress=lambda _: None)
 
         self.assertEqual(seen_models, ["new-model"])
+        self.assertEqual(run["memory"], "remote API")
         self.assertEqual(run["requests"], 1)
         self.assertEqual(run["rows"][0]["topic_detail"], "ผ้าขาด/ผ้าหุ้มชำรุด")
         self.assertEqual(run["rows"][0]["qa_score"], 4)
@@ -133,3 +133,14 @@ class TestRunAndReport(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_cli_requires_explicit_api_authorization():
+    with mock.patch.object(compare, "load_calls") as load_calls:
+        try:
+            compare.main(["--models", "model-a"])
+        except SystemExit as exc:
+            assert exc.code == 2
+        else:
+            raise AssertionError("API comparison was allowed without authorization")
+        load_calls.assert_not_called()

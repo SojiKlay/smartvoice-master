@@ -214,7 +214,7 @@ class TestQueueStop(_DBCase):
             db.reset_calls_to_uploaded([call_id])  # what process_call does
             raise ProcessingCancelled()
 
-        with mock.patch("smartvoice.ui_helpers.get_ollama_readiness", return_value=(True, "")), \
+        with mock.patch("smartvoice.ui_helpers.get_llm_readiness", return_value=(True, "")), \
              mock.patch.object(ui_helpers.pipeline, "process_call", side_effect=stop_on_first) as run:
             queued = ui_helpers.launch_processing_queue(ids)
             self._wait_for_queue()
@@ -228,7 +228,7 @@ class TestQueueStop(_DBCase):
     def test_a_finished_queue_leaves_its_results_alone(self):
         ids = [db.insert_call(f"{n}.wav", f"h{n}", f"/{n}.wav") for n in range(2)]
 
-        with mock.patch("smartvoice.ui_helpers.get_ollama_readiness", return_value=(True, "")), \
+        with mock.patch("smartvoice.ui_helpers.get_llm_readiness", return_value=(True, "")), \
              mock.patch.object(ui_helpers.pipeline, "process_call",
                                side_effect=lambda cid: db.update_call_status(cid, "done")):
             ui_helpers.launch_processing_queue(ids)

@@ -8,12 +8,8 @@ from smartvoice.env_settings import (
     DEMO_PRESET,
     REAL_AI_PRESET,
     env_bool,
-    gpu_available,
-    gpu_device_name,
     mask_secret,
     read_env,
-    recommended_combo_for_model,
-    validate_whisper_combo,
     write_env,
 )
 from smartvoice import audit as audit_trail
@@ -34,8 +30,6 @@ st.caption(
 
 @st.cache_data(ttl=300, show_spinner="กำลังตรวจความพร้อมของระบบ...")
 def _cached_preflight_checks():
-    """Readiness checks hit Ollama and HuggingFace over the network (~2.6 s).
-    Uncached, every click on this page waited for them."""
     return run_preflight_checks()
 
 values = read_env()
@@ -47,7 +41,7 @@ with mode_col:
     st.write("กดปุ่มเดียวเพื่อตั้งค่าทั้งชุด")
     c1, c2 = st.columns(2)
     with c1:
-        if st.button("โหมดสาธิต (ไม่ต้องใช้ GPU)", use_container_width=True,
+        if st.button("โหมดสาธิต (ใช้บทสนทนาตัวอย่าง)", use_container_width=True,
                      help="ใช้บทสนทนาตัวอย่างแทนการถอดเสียงจริง — เหมาะกับโน้ตบุ๊กหรือการนำเสนอ"):
             write_env(DEMO_PRESET)
             audit(
@@ -58,30 +52,24 @@ with mode_col:
             st.rerun()
     with c2:
         if st.button("โหมดใช้งานจริง (AI เต็มรูปแบบ)", use_container_width=True,
-                     help="ถอดเสียงจริงด้วย Whisper + แยกผู้พูด — ต้องมี HuggingFace token และเครื่องแรงพอ"):
+                     help="ถอดเสียงและแยกผู้พูดด้วย pyannoteAI และวิเคราะห์ด้วย Typhoon API"):
             write_env(REAL_AI_PRESET)
             audit(
                 audit_trail.UPDATE, audit_trail.ENTITY_SETTINGS,
                 entity_label="Real AI Mode", changes=dict(REAL_AI_PRESET),
             )
-            st.success("บันทึกโหมดใช้งานจริงแล้ว — ใส่ HuggingFace token (ถ้ายังไม่มี) แล้วเปิดโปรแกรมใหม่")
+            st.success("บันทึกโหมด API แล้ว — ตั้งค่า API keys แล้วเปิดโปรแกรมใหม่")
             st.rerun()
 
 with status_col:
     st.subheader("โหมดปัจจุบัน")
     is_demo = env_bool(values, "MOCK_STT", default=False)
     st.metric("การถอดเสียง", "โหมดสาธิต" if is_demo else "ใช้งานจริง")
-    token = values.get("HF_TOKEN", "")
-    st.caption(f"HuggingFace token: `{mask_secret(token) or 'ยังไม่ได้ตั้งค่า'}`")
+    st.caption("ถอดเสียง: pyannoteAI API | วิเคราะห์: Typhoon API")
 
 st.divider()
 
 st.subheader("ตั้งค่าโดยละเอียด")
-
-# NOTE: This section is intentionally NOT wrapped in `st.form` so the
-# Whisper model selector can fire its `on_change` callback immediately —
-# inside a form, on_change is deferred until form submit. We use a regular
-# `st.button` at the bottom to commit all values to `.env` together.
 
 demo_mode = st.toggle(
     "โหมดสาธิต (ไม่ถอดเสียงจริง ใช้บทสนทนาตัวอย่าง)",
@@ -89,20 +77,9 @@ demo_mode = st.toggle(
 )
 
 st.markdown("#### AI สำหรับการใช้งานจริง")
-stt_providers = ["local", "pyannote_api"]
-llm_providers = ["ollama", "typhoon"]
-stt_provider = st.selectbox(
-    "บริการถอดเสียงและแยกผู้พูด", stt_providers,
-    index=stt_providers.index(values.get("STT_PROVIDER", "local")) if values.get("STT_PROVIDER", "local") in stt_providers else 0,
-    format_func=lambda value: {"local": "ประมวลผลในเครื่อง", "pyannote_api": "Whisper + Pyannote API"}[value],
-    key="_stt_provider",
-)
-llm_provider = st.selectbox(
-    "บริการวิเคราะห์ข้อความ", llm_providers,
-    index=llm_providers.index(values.get("LLM_PROVIDER", "ollama")) if values.get("LLM_PROVIDER", "ollama") in llm_providers else 0,
-    format_func=lambda value: {"ollama": "Ollama ในเครื่อง", "typhoon": "Typhoon API"}[value],
-    key="_llm_provider",
-)
+stt_provider = "pyannote_api"
+llm_provider = "typhoon"
+st.caption("บริการถอดเสียงและแยกผู้พูด: pyannoteAI API | บริการวิเคราะห์ข้อความ: Typhoon API")
 api_updates = {}
 if stt_provider == "pyannote_api" or llm_provider == "typhoon":
     st.info("โหมด API ส่งเสียงหรือบทสนทนาให้ผู้ให้บริการภายนอก และมีค่าใช้บริการตามบัญชีของคุณ")
@@ -130,126 +107,6 @@ for field, enabled in (("PYANNOTE_API_KEY", stt_provider == "pyannote_api"), ("T
             api_updates[field] = ""
         elif secret.strip():
             api_updates[field] = secret.strip()
-hf_token = st.text_input(
-    "HuggingFace token",
-    value="",
-    type="password",
-    placeholder="เว้นว่างไว้ = ใช้ค่าเดิม",
-    help="จำเป็นสำหรับการแยกเสียงพนักงาน/ลูกค้า (pyannote) ในโหมดใช้งานจริง",
-    key="_hf_token_input",
-)
-clear_hf_token = st.checkbox("ลบ HuggingFace token ที่บันทึกไว้")
-
-ollama_base_url = st.text_input(
-    "Ollama base URL",
-    value=values.get("OLLAMA_BASE_URL", "http://localhost:11434"),
-    key="_ollama_base_url_input",
-)
-ollama_model = st.text_input(
-    "Ollama model",
-    value=values.get("OLLAMA_MODEL", "scb10x/llama3.1-typhoon2-8b-instruct"),
-    key="_ollama_model_input",
-)
-
-st.markdown("#### โมเดลถอดเสียง (Whisper)")
-
-# GPU availability check — hides cuda from Device dropdown when no GPU
-# is present, so the user can't accidentally save a combo that will crash
-# later in `model.to('cuda')`.
-_has_gpu = gpu_available() if stt_provider == "local" else False
-if _has_gpu:
-    st.success(f"ตรวจพบ GPU: **{gpu_device_name() or 'CUDA device'}** — เลือก device=cuda ได้")
-elif stt_provider == "local":
-    st.warning(
-        "ไม่พบ GPU บนเครื่องนี้ — option `cuda` ถูกซ่อนจาก Device dropdown "
-        "เพื่อกัน pipeline crash ตอน process. แนะนำ device=cpu + compute=int8"
-    )
-
-# ── Option lists + session_state seeding ────────────────────────────────────
-# Seed session_state from .env once per session so widgets render with the
-# user's last-saved values. After that, the model selector's on_change
-# callback can rewrite backend/device/compute keys to apply the recommended
-# combo for the newly-picked model.
-_WHISPER_MODELS = [
-    "biodatlab/distill-whisper-th-large-v3",
-    "large-v3",
-    "large-v3-turbo",
-]
-_BACKEND_OPTIONS = ["auto", "transformers", "faster-whisper"]
-_COMPUTE_OPTIONS = ["auto", "float16", "int8"]
-_DEVICE_OPTIONS = ["auto", "cpu"] + (["cuda"] if _has_gpu else [])
-
-
-def _seed_state(state_key: str, env_key: str, default: str, allowed) -> None:
-    if state_key not in st.session_state:
-        saved = values.get(env_key, default)
-        if saved not in allowed:
-            saved = default
-        st.session_state[state_key] = saved
-
-
-_seed_state("_whisper_model_select",   "WHISPER_MODEL",   _WHISPER_MODELS[0], _WHISPER_MODELS)
-_seed_state("_whisper_backend_select", "WHISPER_BACKEND", "transformers",     _BACKEND_OPTIONS)
-_seed_state("_whisper_device_select",  "WHISPER_DEVICE",  "auto",             _DEVICE_OPTIONS)
-_seed_state("_whisper_compute_select", "WHISPER_COMPUTE", "auto",             _COMPUTE_OPTIONS)
-
-
-def _apply_model_recommendations() -> None:
-    """Snap Backend / Device / Compute to the recommended combo for the
-    currently-picked model. Fires as the Whisper model selectbox's on_change."""
-    selected = st.session_state.get("_whisper_model_select")
-    combo = recommended_combo_for_model(selected, has_gpu=_has_gpu)
-    if combo is None:
-        return
-    backend, device, compute = combo
-    # Stay within the dropdown choices presented by this UI render
-    if device not in _DEVICE_OPTIONS:
-        device = "auto"
-    st.session_state["_whisper_backend_select"] = backend
-    st.session_state["_whisper_device_select"] = device
-    st.session_state["_whisper_compute_select"] = compute
-
-
-st.caption(
-    "หมายเหตุ: เปลี่ยน Whisper model → ระบบจะปรับ Backend / Device / Compute เป็นค่าแนะนำให้อัตโนมัติ "
-    "(หลังจากนั้นปรับเองได้)"
-)
-whisper_model = st.selectbox(
-    "Whisper model",
-    _WHISPER_MODELS,
-    key="_whisper_model_select",
-    on_change=_apply_model_recommendations,
-    help=(
-        "biodatlab/distill-whisper-th-large-v3 → แม่นยำสำหรับภาษาไทย (แนะนำ backend=transformers)  •  "
-        "large-v3 / large-v3-turbo → เร็วกว่า (แนะนำ backend=faster-whisper)"
-    ),
-)
-whisper_backend = st.selectbox(
-    "Backend",
-    _BACKEND_OPTIONS,
-    key="_whisper_backend_select",
-    help=(
-        "transformers → ใช้ได้กับทุก HF model ทันที  •  "
-        "faster-whisper → เร็วกว่า แต่ถ้าโมเดลไม่ใช่ standard name "
-        "(large-v3, large-v3-turbo, ฯลฯ) ระบบจะแปลง CT2 ก่อนใช้งานครั้งแรก (~5-10 นาที)"
-    ),
-)
-whisper_device = st.selectbox(
-    "Device",
-    _DEVICE_OPTIONS,
-    key="_whisper_device_select",
-    help="auto = ตรวจ GPU เอง (cuda ถ้ามี, ไม่งั้น cpu)",
-)
-whisper_compute = st.selectbox(
-    "Compute",
-    _COMPUTE_OPTIONS,
-    key="_whisper_compute_select",
-    help=(
-        "auto → จับคู่กับ device อัตโนมัติ (cuda→float16, cpu→int8)  •  "
-        "float16 → เร็วบน GPU เท่านั้น  •  int8 → quantized, ดีสำหรับ CPU"
-    ),
-)
-
 st.markdown("#### แจ้งเตือน Discord")
 st.caption(
     "ส่งข้อความเข้าช่อง Discord ทุกครั้งที่มีคนรับเคส คืนเคส ปิดเคส หรือเปิดเคสอีกครั้ง — "
@@ -282,17 +139,7 @@ if submitted:
         "LLM_PROVIDER": llm_provider,
         **api_updates,
         "MOCK_STT": "true" if demo_mode else "false",
-        "OLLAMA_BASE_URL": ollama_base_url.strip() or "http://localhost:11434",
-        "OLLAMA_MODEL": ollama_model.strip(),
-        "WHISPER_MODEL": whisper_model,
-        "WHISPER_BACKEND": whisper_backend,
-        "WHISPER_DEVICE": whisper_device,
-        "WHISPER_COMPUTE": whisper_compute,
     }
-    if clear_hf_token:
-        updates["HF_TOKEN"] = ""
-    elif hf_token.strip():
-        updates["HF_TOKEN"] = hf_token.strip()
 
     webhook_error = None
     if clear_discord_webhook:
@@ -318,22 +165,6 @@ if submitted:
     if webhook_error:
         st.error(webhook_error)
 
-    # Run combo validation after save so the user sees actionable feedback
-    # before the next `process_call()` would otherwise crash.
-    _issues = [] if stt_provider != "local" else validate_whisper_combo(
-        model=whisper_model,
-        backend=whisper_backend,
-        device=whisper_device,
-        compute=whisper_compute,
-        has_gpu=_has_gpu,
-    )
-    for severity, message in _issues:
-        if severity == "error":
-            st.error(message)
-        elif severity == "warning":
-            st.warning(message)
-        else:
-            st.info(message)
 
 st.divider()
 

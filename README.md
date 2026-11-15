@@ -1,6 +1,6 @@
 # SmartVoice
 
-AI-powered Call Center Analytics สำหรับสายภาษาไทย: รับไฟล์เสียง, ถอดเสียง, แยกผู้พูด, วิเคราะห์คุณภาพการสนทนาด้วย LLM (ตรวจคำตอบของ AI ก่อนบันทึกทุกครั้ง), จัดกลุ่มและติดตามเคสลูกค้า, เก็บข้อมูลลูกค้า / ทะเบียนรับประกัน / ใบสั่งขาย และออกรายงาน — ทำงานในเครื่องเดียว
+AI-powered Call Center Analytics สำหรับสายภาษาไทย: รับไฟล์เสียง, ถอดเสียง, แยกผู้พูด, วิเคราะห์คุณภาพการสนทนาด้วย LLM (ตรวจคำตอบของ AI ก่อนบันทึกทุกครั้ง), จัดกลุ่มและติดตามเคสลูกค้า, เก็บข้อมูลลูกค้า / ทะเบียนรับประกัน / ใบสั่งขาย และออกรายงาน — เว็บและข้อมูลอยู่บนเครื่อง/เซิร์ฟเวอร์ ส่วน AI เรียก API
 
 ## Tech Stack
 
@@ -8,10 +8,9 @@ AI-powered Call Center Analytics สำหรับสายภาษาไท�
 |-----------|------------|
 | UI | Streamlit แบบ multi-page (`st.navigation` + สิทธิ์ตาม role) |
 | Database | SQLite 3 |
-| STT (default) | `biodatlab/distill-whisper-th-large-v3` ผ่าน `transformers` |
-| STT (alternative) | `faster-whisper` สำหรับ `large-v3`, `large-v3-turbo`, หรือโมเดล CT2 native |
-| Speaker Diarization | `pyannote/speaker-diarization-3.1` |
-| LLM | Ollama + `scb10x/llama3.1-typhoon2-8b-instruct` |
+| STT | Whisper Large v3 Turbo ผ่าน pyannoteAI API |
+| Speaker Diarization | pyannoteAI Precision-2/3 API |
+| LLM | Typhoon API |
 | รายงาน | `fpdf2` + `uharfbuzz` (PDF ภาษาไทย), `openpyxl` (Excel ใบสั่งขาย) |
 
 ## Current Capabilities
@@ -42,7 +41,7 @@ AI-powered Call Center Analytics สำหรับสายภาษาไท�
 - **ไม่ลบข้อมูลลูกค้าจริง (soft delete)** — "ลบ" ลูกค้า/ทะเบียน/SO คือซ่อน แถวยังอยู่ครบและกู้คืนได้
 - **Audit log ทั้งระบบ** — การเข้าสู่ระบบ, บัญชี, ลูกค้า/ทะเบียน/SO, สาย, เคส, การตั้งค่า และการส่งออกรายงาน พร้อมค่าก่อน→หลัง (Admin + Supervisor)
 - ภาษาไทยทั้งหน้าจอ เวลาแสดงเป็นเวลาไทย (UTC+7); หน้าแรก / Admin / Dashboard รองรับ 10K+ ไฟล์
-- Settings page — auto-detect GPU, แนะนำ Backend/Device/Compute ตาม Whisper model, ตรวจ combo ก่อน save
+- Settings page — ตั้งค่า API keys, รุ่น API, โหมดเสียงตัวอย่าง และ Discord
 
 ## Project Structure
 
@@ -91,7 +90,6 @@ smartvoice/
 │       ├── audio.py               # Load, resample, denoise
 │       ├── diarize.py             # pyannote wrapper
 │       ├── orchestrator.py        # Audio → STT → diarization
-│       └── transcribe.py          # `transformers` + `faster-whisper`
 ├── scripts/
 │   ├── backfill_topic_detail.py   # Re-classify topic_detail for legacy calls
 │   ├── extract_pdf.py
@@ -108,7 +106,6 @@ smartvoice/
 │   └── user_manual.md
 ├── data/                           # runtime data (gitignored)
 │   ├── logs/
-│   ├── models/
 │   ├── raw_audio/
 │   ├── warranty_proofs/            # รูป/PDF หลักฐานการซื้อ
 │   └── smartvoice.db
@@ -142,6 +139,9 @@ smartvoice/
 
 ## Quick Start
 
+เวอร์ชันปัจจุบันใช้ API เท่านั้น ไม่ติดตั้งหรือรันโมเดล Local หากอัปเดตจากรุ่นเดิม ให้เปิด Settings แล้วบันทึกโหมด API และ keys; ค่า provider เดิมจะถูกปฏิเสธ ไม่มีการแก้ `.env` อัตโนมัติ
+
+
 ### Windows
 
 ```powershell
@@ -157,7 +157,7 @@ python -m venv .venv
 .venv\Scripts\activate
 pip install -r requirements.txt
 pip install -e . --no-deps
-copy .env.example .env
+if (!(Test-Path .env)) { Copy-Item .env.example .env }
 streamlit run Home.py
 ```
 
@@ -168,15 +168,14 @@ streamlit run Home.py
 ## Core Environment Variables
 
 ```env
-WHISPER_MODEL=biodatlab/distill-whisper-th-large-v3
-WHISPER_BACKEND=transformers
-WHISPER_DEVICE=auto
-WHISPER_COMPUTE=auto
+STT_PROVIDER=pyannote_api
+LLM_PROVIDER=typhoon
+PYANNOTE_API_KEY=
+PYANNOTE_API_MODEL=precision-2
+STT_API_MODEL=faster-whisper-large-v3-turbo
+TYPHOON_API_KEY=
+TYPHOON_MODEL=typhoon-v2.5-30b-a3b-instruct
 MOCK_STT=false
-HF_TOKEN=
-OLLAMA_BASE_URL=http://localhost:11434
-OLLAMA_MODEL=scb10x/llama3.1-typhoon2-8b-instruct
-OLLAMA_NUM_CTX=12288          # context ของ LLM (Ollama ตั้งต้น 4096 ซึ่งไม่พอ)
 CASE_RECENCY_HOURS=4.0
 SMARTVOICE_USERS=
 PROCESSING_STALE_MINUTES=180
@@ -189,11 +188,10 @@ REPORT_FONT_PATH=             # ฟอนต์ไทยของรายงา
 ```text
 Audio (.wav/.mp3)
   → validate + save + optional phone auto-link
-  → load / resample / denoise
-  → Whisper STT + pyannote diarization
+  → upload + pyannoteAI API transcription/diarization + checkpoint
   → heuristic cleanup + transcript cleanup LLM
   → speaker correction LLM + deterministic Thai role rules
-  → LLM analysis 5 requests (JSON mode, temperature 0)
+  → Typhoon analysis 5 requests (JSON parsing, temperature 0)
   → insight_rules: verify quotes, compute scores/flags
   → SQLite save
   → auto case assignment
@@ -223,4 +221,4 @@ Audio (.wav/.mp3)
 & ".venv\Scripts\python.exe" -m pytest tests\ --ignore=tests\test_config.py -q
 ```
 
-ผลล่าสุดที่ยืนยันแล้ว: `492 passed` (ทดสอบเมื่อ 2026-10-16)
+ผลทดสอบรอบปัจจุบันและข้อจำกัด: ดู `PROJECT_STATUS.md`

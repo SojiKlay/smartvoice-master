@@ -7,11 +7,22 @@
 
 ## ใช้งานผ่าน API โดยไม่ติดตั้งโมเดลในเครื่อง
 
+ตั้งแต่ 15 พฤศจิกายน 2026 ตัดการรัน Whisper/Pyannote/Ollama ในเครื่องออกแล้ว ไม่ต้องติดตั้ง GPU, CUDA, PyTorch หรือ HuggingFace token. เว็บ, SQLite และข้อมูล runtime ยังคงอยู่ในเครื่อง/เซิร์ฟเวอร์ ไม่ใช่การ deploy Cloud อัตโนมัติ
+
+### อัปเดตจากรุ่น Local
+
+เปิดหน้า Settings แล้วกดโหมดใช้งานจริง ตั้ง API keys และบันทึก จากนั้นเปิดแอปใหม่ โดยใช้ `STT_PROVIDER=pyannote_api` และ `LLM_PROVIDER=typhoon`. หากยังเป็น `local`/`ollama` จะมีข้อความให้แก้การตั้งค่า; ระบบไม่ส่งข้อมูลไป API ด้วยการเปลี่ยน provider เงียบ ๆ. ตัวแปร `WHISPER_*`, `OLLAMA_*`, `HF_TOKEN` เดิมไม่ได้ใช้งานแล้ว ไม่ลบ `.env`, โมเดลที่ดาวน์โหลดไว้ หรือฐานข้อมูลเดิม
+
+`MOCK_STT=true` ใช้บทสนทนาตัวอย่างแทนเสียงเท่านั้น การวิเคราะห์ยังใช้ Typhoon API และมีค่าใช้จ่าย
+
+
 โหมดนี้ใช้ Whisper Large v3 Turbo และ Pyannote Precision-2 ผ่าน pyannoteAI STT Orchestration
 และใช้ Typhoon API วิเคราะห์ข้อความ เว็บและ SQLite ยังรันในเครื่องหรือ EC2 ได้เหมือนเดิม
 ต้องมี API key และเครดิตของทั้งสองบริการ ค่า API ไม่รวมในเครดิต AWS Academy
 
-ติดตั้งเฉพาะ dependencies สำหรับ API ใน virtual environment แล้วเปิดเว็บ:
+ตัวติดตั้งทั้ง `run.bat`, `run.sh` และ `requirements.txt` ใช้ dependencies สำหรับ API แล้ว
+
+ติดตั้ง dependencies สำหรับ API ใน virtual environment แล้วเปิดเว็บ:
 
 ```powershell
 py -3.11 -m venv .venv
@@ -66,137 +77,6 @@ STT backend นี้รองรับ Whisper Turbo กับ Precision-2/3; C
 - https://docs.pyannote.ai/tutorials/speech-to-text-diarization
 - https://docs.pyannote.ai/tutorials/how-to-upload-files
 - https://docs.opentyphoon.ai/en/api-reference/
-
-## สิ่งที่ต้องเตรียมสำหรับโมเดล local
-
-| รายการ | รายละเอียด |
-|--------|------------|
-| Python | 3.10 หรือ 3.11 |
-| Disk space | ประมาณ 10 GB ขึ้นไปสำหรับ package, model, และ cache |
-| Ollama | จำเป็นสำหรับ LLM analysis |
-| HuggingFace token | จำเป็นสำหรับ pyannote diarization ในโหมด Real AI |
-| NVIDIA GPU | ไม่บังคับ แต่ช่วยให้ STT เร็วขึ้นมาก |
-
-ก่อนใช้ `HF_TOKEN` ให้กด accept license ของ:
-
-1. `pyannote/speaker-diarization-3.1`
-2. `pyannote/segmentation-3.0`
-
----
-
-## วิธีติดตั้งที่แนะนำบน Windows
-
-### 1. Clone โปรเจค
-
-```bash
-git clone <repo-url> smartvoice
-```
-
-### 2. ใช้ launcher ครั้งแรก
-
-```powershell
-run.bat
-```
-
-`run.bat` จะทำให้ครบชุด:
-
-- สร้าง `.venv`
-- สร้าง `.env` จาก `.env.example`
-- ติดตั้ง dependencies และติดตั้ง package แบบ editable
-- ตรวจ Python, PyTorch, CUDA, Ollama
-- เสนอคำสั่งติดตั้ง PyTorch CUDA build ที่เหมาะกับเครื่อง
-- เสนอการติดตั้ง Ollama และดาวน์โหลดโมเดลถ้ายังไม่มี
-- เปิดแอปที่ `http://localhost:8501`
-
-ถ้าต้องการติดตั้งเองแบบ manual ให้ใช้ขั้นตอนถัดไป
-
----
-
-## วิธีติดตั้งแบบ Manual
-
-### 1. สร้าง virtual environment
-
-```powershell
-python -m venv .venv
-.venv\Scripts\activate
-```
-
-```bash
-# Linux / macOS
-python3 -m venv .venv
-source .venv/bin/activate
-```
-
-### 2. ติดตั้ง dependency และ package
-
-```powershell
-pip install -r requirements.txt
-pip install -e . --no-deps
-```
-
-> อัปเดตจากเวอร์ชันก่อน: ถ้าเปิดด้วย `run.bat` / `run.sh` launcher ติดตั้งให้เอง (รัน `pip install -r requirements.txt` ทุกครั้งที่เปิด); ถ้าติดตั้งแบบ Manual ให้รัน `pip install -r requirements.txt` อีกครั้ง — มีแพ็กเกจใหม่ `openpyxl` (นำเข้า SO จาก Excel), `fpdf2` และ `uharfbuzz` (รายงาน PDF ภาษาไทย) ฐานข้อมูลเดิมจะถูกเพิ่มตาราง/คอลัมน์ใหม่ให้เองตอนเปิดแอป ข้อมูลเดิมไม่เปลี่ยน
-
-### 3. ตั้งค่า `.env`
-
-```powershell
-copy .env.example .env
-```
-
-ค่าหลักที่ควรรู้:
-
-```env
-WHISPER_MODEL=biodatlab/distill-whisper-th-large-v3
-WHISPER_BACKEND=transformers
-WHISPER_DEVICE=auto
-WHISPER_COMPUTE=auto
-MOCK_STT=false
-HF_TOKEN=hf_xxxxxxxxxxxxxxxxx
-OLLAMA_BASE_URL=http://localhost:11434
-OLLAMA_MODEL=scb10x/llama3.1-typhoon2-8b-instruct
-OLLAMA_NUM_CTX=12288
-CASE_RECENCY_HOURS=4.0
-PROCESSING_STALE_MINUTES=180
-SMARTVOICE_USERS=
-DISCORD_WEBHOOK_URL=
-REPORT_FONT_PATH=
-```
-
-หมายเหตุ:
-
-- `MOCK_STT=true` ใช้โหมด demo โดยไม่เรียก STT จริง
-- `CASE_RECENCY_HOURS` ใช้ auto-attach สายใหม่เข้ากับเคสเปิดล่าสุดของลูกค้าคนเดิม
-- `PROCESSING_STALE_MINUTES` ใช้ reset งานที่ค้างในสถานะ `processing` หลังแอปถูกปิดกลางทาง
-- `OLLAMA_NUM_CTX` ความยาว context ของ LLM (ค่าตั้งต้นของ Ollama บน GPU 16 GB คือ 4096 ซึ่งตัด prompt วิเคราะห์ทิ้ง) — ไม่ต้องใส่ก็ได้ ระบบใช้ 12288
-- `DISCORD_WEBHOOK_URL` แจ้งเตือนเข้า Discord เมื่อมีคนรับ/คืน/ปิดเคส — สร้างใน Discord: ตั้งค่าช่อง → Integrations → Webhooks → Copy Webhook URL; ว่าง = ไม่ส่ง (ตั้งจากหน้า Settings ได้ และถือเป็นความลับ)
-- `REPORT_FONT_PATH` ฟอนต์ภาษาไทย (.ttf) สำหรับรายงาน PDF — ว่างไว้ได้บน Windows (ใช้ Tahoma / Leelawadee อัตโนมัติ); บน Linux ติดตั้ง `fonts-thai-tlwg` หรือ Noto Sans Thai
-- `SMARTVOICE_USERS` ปล่อยว่างได้ — บัญชีผู้ใช้ปกติเก็บในฐานข้อมูลและจัดการผ่านหน้า `จัดการผู้ใช้` (ดูหัวข้อ Authentication)
-
-### 4. เปิด Ollama
-
-```bash
-ollama pull scb10x/llama3.1-typhoon2-8b-instruct
-ollama serve
-```
-
-### 5. Seed mock data ถ้าต้องการ
-
-```powershell
-python scripts/seed_mock_data.py
-```
-
-### 6. เปิดแอป
-
-```powershell
-streamlit run Home.py
-```
-
-หรือใช้:
-
-```powershell
-.venv\Scripts\smartvoice
-```
-
----
 
 ## หน้าเว็บที่มีตอนนี้
 
@@ -258,39 +138,7 @@ SMARTVOICE_USERS=admin|Admin|pbkdf2_sha256$...
 
 ---
 
-## GPU / CUDA
-
-บน Windows ให้รัน `run.bat` ก่อน เพราะ launcher จะตรวจ CUDA และแนะนำ wheel tag ที่ตรงกับเครื่องให้เอง
-
-ถ้าจะติดตั้งเอง ตัวอย่างรูปแบบคำสั่งคือ:
-
-```powershell
-.venv\Scripts\python.exe -m pip uninstall -y torch torchvision torchaudio
-.venv\Scripts\python.exe -m pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
-```
-
-เปลี่ยน `cu128` ให้ตรงกับ CUDA ที่เครื่องรองรับ
-
----
-
 ## Troubleshooting
-
-### `HF_TOKEN` invalid / 401
-
-- ตรวจว่า accept license ของ pyannote ทั้ง 2 model แล้ว
-- รีสตาร์ทแอปหลังแก้ `.env`
-
-### Ollama ยังไม่พร้อม
-
-- เปิด `ollama serve`
-- ตรวจว่ามีโมเดลที่ตั้งใน `OLLAMA_MODEL`
-- หน้า Home และ Settings จะแสดง readiness checks ให้ดูได้ทันที
-
-### CUDA ใช้ไม่ได้
-
-- รัน `run.bat` เพื่อดู environment check
-- ตรวจ `WHISPER_DEVICE`
-- ถ้าเครื่องยังไม่พร้อม ใช้ `MOCK_STT=true` ชั่วคราว
 
 ### Upload แล้วไฟล์ไม่ผ่าน
 
@@ -335,3 +183,7 @@ SMARTVOICE_USERS=admin|Admin|pbkdf2_sha256$...
 - [`docs/database_design.md`](docs/database_design.md)
 - [`docs/OMAZZ_RELEASE_CHECKLIST.md`](docs/OMAZZ_RELEASE_CHECKLIST.md)
 - [`CHANGELOG.md`](CHANGELOG.md)
+
+## เปรียบเทียบรุ่น LLM ผ่าน API
+
+`python scripts/compare_llm_models.py --models <model-A> <model-B> --allow-api` ส่ง transcript ที่เก็บไว้ไป Typhoon และมีค่าใช้บริการ โดยเปิด DB แบบอ่านอย่างเดียว เก็บรายงานใน `data/llm_compare/` ที่ gitignored. เครื่องมือเปรียบเทียบ STT แบบ Local ถูกถอดออก

@@ -62,7 +62,7 @@ def test_api_stt_upload_poll_and_cache(api_env, monkeypatch, tmp_path):
     monkeypatch.setattr(requests, "post", post)
     monkeypatch.setattr(requests, "put", put)
     monkeypatch.setattr(requests, "get", get)
-    monkeypatch.setattr(orchestrator, "_real_transcribe_diarized", Mock(side_effect=AssertionError("local model called")))
+    assert not hasattr(orchestrator, "_real_transcribe_diarized")
     result = orchestrator.transcribe_diarized(str(audio))
     assert result == [{"speaker": "Speaker 0", "text": "สวัสดีค่ะ", "start": 0.0, "end": 1.0}]
     assert post.call_args.kwargs["json"]["transcriptionConfig"]["model"] == "faster-whisper-large-v3-turbo"
@@ -85,8 +85,8 @@ def test_api_stt_failure_is_not_empty_success(api_env, monkeypatch, tmp_path):
 
 def test_readiness_in_api_mode_does_not_require_ollama(api_env, monkeypatch):
     monkeypatch.setattr(preflight, "MOCK_STT", False)
-    monkeypatch.setattr(preflight.shutil, "which", Mock(side_effect=AssertionError("local CLI check")))
-    assert preflight.get_ollama_readiness()[0]
+    monkeypatch.setattr(requests, "get", Mock(side_effect=AssertionError("readiness must not call network")))
+    assert preflight.get_llm_readiness()[0]
     assert preflight.get_pyannote_access_readiness()[0]
 
 
@@ -174,10 +174,15 @@ def test_cancellation_prevents_audio_upload(api_env, monkeypatch, tmp_path):
     post.assert_not_called()
 
 
-def test_settings_saves_api_choices_without_exposing_keys(api_env, monkeypatch, tmp_path):
+@pytest.mark.parametrize("legacy", [False, True])
+def test_settings_saves_api_choices_without_exposing_keys(api_env, monkeypatch, tmp_path, legacy):
     monkeypatch.setenv("DB_PATH", str(tmp_path / "test.db"))
     db.init_db()
     values = {"STT_PROVIDER": "pyannote_api", "LLM_PROVIDER": "typhoon", "TYPHOON_MODEL": "typhoon-v2.1-12b-instruct"}
+    if legacy:
+        values.update(STT_PROVIDER="local", LLM_PROVIDER="ollama")
+        monkeypatch.setenv("STT_PROVIDER", "local")
+        monkeypatch.setenv("LLM_PROVIDER", "ollama")
     monkeypatch.setattr(env_settings, "read_env", lambda: values)
     save = Mock()
     monkeypatch.setattr(env_settings, "write_env", save)
@@ -197,6 +202,9 @@ def test_settings_saves_api_choices_without_exposing_keys(api_env, monkeypatch, 
     assert saved["TYPHOON_API_KEY"] == "new-secret"
     assert saved["TYPHOON_MODEL"] == "typhoon-v2.1-12b-instruct"
     assert saved["STT_PROVIDER"] == "pyannote_api"
+    assert saved["LLM_PROVIDER"] == "typhoon"
+    assert not any(key.startswith(("WHISPER_", "OLLAMA_")) or key == "HF_TOKEN" for key in saved)
+    assert not any(widget.label in {"Whisper model", "Backend", "Device", "Compute", "Ollama model", "HuggingFace token"} for kind in (app.selectbox, app.text_input) for widget in kind)
     assert "new-secret" not in " ".join(item.value for item in app.caption)
     assert not any("ไม่พบ GPU" in item.value for item in app.warning)
 
@@ -206,5 +214,14 @@ def test_unsupported_speech_model_rejected_before_upload(api_env, monkeypatch, t
     post = Mock()
     monkeypatch.setattr(requests, "post", post)
     with pytest.raises(ValueError, match="precision-2"):
+        orchestrator.transcribe_diarized(str(tmp_path / "unused.wav"))
+    post.assert_not_called()
+
+
+def test_missing_speech_key_prevents_upload(api_env, monkeypatch, tmp_path):
+    monkeypatch.delenv("PYANNOTE_API_KEY")
+    post = Mock()
+    monkeypatch.setattr(requests, "post", post)
+    with pytest.raises(ValueError, match="PYANNOTE_API_KEY"):
         orchestrator.transcribe_diarized(str(tmp_path / "unused.wav"))
     post.assert_not_called()
