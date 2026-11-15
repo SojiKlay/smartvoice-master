@@ -77,7 +77,8 @@ def extract_json(raw: str) -> dict:
             continue
         if isinstance(value, dict):
             return value
-    raise ValueError(f"No JSON object found in LLM response: {raw[:300]}")
+    # No excerpt in the message: it can reach logs and calls.error_msg.
+    raise ValueError(f"No JSON object found in LLM response ({len(raw)} chars)")
 
 
 def _extract_json_array(raw: str) -> list | None:
@@ -109,24 +110,22 @@ def correct_speakers(conversation: list[dict]) -> list[dict]:
         raw = chat(system, user)
         corrections = _extract_json_array(raw)
         if not isinstance(corrections, list) or not corrections:
+            # Sizes only: the model's answer quotes the call, and logs leave
+            # the database's access controls (e.g. a central cloud log service).
             log.warning(
-                "correct_speakers: LLM response yielded no JSON array — skipping.\n"
-                "  raw preview: %r",
-                (raw or "")[:400],
+                "correct_speakers: LLM response yielded no JSON array — skipping "
+                "(%d chars)", len(raw or ""),
             )
             return conversation
         # Defensive: LLM sometimes returns bare indices like [0, 3, 5] instead of
         # [{"idx": 0, "speaker": "Agent"}, ...]. Filter out non-dict entries so
         # .get() never crashes.
-        non_dict_sample = [c for c in corrections if not isinstance(c, dict)][:3]
+        non_dict_types = sorted({type(c).__name__ for c in corrections if not isinstance(c, dict)})
         corrections = [c for c in corrections if isinstance(c, dict)]
         if not corrections:
             log.warning(
-                "correct_speakers: LLM returned array of non-dict entries — skipping.\n"
-                "  sample non-dict items: %r\n"
-                "  raw preview: %r",
-                non_dict_sample,
-                (raw or "")[:400],
+                "correct_speakers: LLM returned array of non-dict entries (%s) — skipping",
+                ", ".join(non_dict_types),
             )
             return conversation
         # Build output — handle both simple speaker swap and segment split (parts)
@@ -391,12 +390,12 @@ def sanitize_evidence(evidence: str, conversation_text: str = "") -> str:
         return ""
     text = str(evidence).strip()
     if _evidence_is_leaked(text) or _evidence_is_vague(text):
-        log.warning("sanitize_evidence: detected leaked/vague evidence %r", text[:120])
+        log.warning("sanitize_evidence: detected leaked/vague evidence (%d chars)", len(text))
         return _EVIDENCE_FALLBACK
     if _evidence_has_prompt_example_leak(text, conversation_text):
         log.warning(
-            "sanitize_evidence: evidence quotes prompt-example token absent from transcript %r",
-            text[:120],
+            "sanitize_evidence: evidence quotes prompt-example token absent from transcript "
+            "(%d chars)", len(text),
         )
         return _EVIDENCE_FALLBACK
     return text

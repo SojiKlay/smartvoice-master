@@ -34,6 +34,9 @@ streamlit run Home.py       # → http://localhost:8501
 # Seed mock data
 & ".venv\Scripts\python.exe" scripts\seed_mock_data.py
 
+# Consistent, integrity-checked DB snapshot (read-only on the live DB) → data\backups\smartvoice-<UTC>.db
+& ".venv\Scripts\python.exe" scripts\backup_db.py [--out data\backups] [--keep 14]
+
 # Backfill topic_detail for legacy "แจ้งปัญหาสินค้า" calls (dry-run by default)
 & ".venv\Scripts\python.exe" scripts\backfill_topic_detail.py [--apply]
 
@@ -43,7 +46,7 @@ streamlit run Home.py       # → http://localhost:8501
 & ".venv\Scripts\python.exe" scripts\compare_llm_models.py --models <current> <candidate> [--limit N] --allow-api
 ```
 
-**Current test baseline:** 541 tests (all of `tests/`, including `test_config.py`), must pass 100% before every commit. Verified 15 Nov 2026: 541 passed on Python 3.12 with the env above. These are mocked-API tests — they are not evidence that the live APIs, PostgreSQL or a cloud deployment work.
+**Current test baseline:** 596 tests (all of `tests/`, including `test_config.py`), must pass 100% before every commit. Verified 15 Nov 2026: 596 passed on Python 3.12 with the env above (541 before the AWS-pilot security work added login-throttle, bootstrap-password, log-privacy, backup and deploy-file tests). These are mocked-API tests — they are not evidence that the live APIs, PostgreSQL or a cloud deployment work.
 
 **External dependency:** `PYANNOTE_API_KEY` and `TYPHOON_API_KEY` must be set (Settings page or `.env`) before processing calls. Readiness checks only test that a key is present, not that it is valid or has credit. Every processed call sends audio to pyannoteAI and transcript text to Typhoon, and costs money — use only audio that is approved for external processing. `scripts\compare_stt_models.py` and local Whisper/Pyannote/Ollama were removed; do not bring them back.
 
@@ -61,7 +64,8 @@ streamlit run Home.py       # → http://localhost:8501
 | `preflight.py` | Readiness checks: Python version, demo mode, bootstrap password, key present for pyannoteAI / Typhoon (presence only — no API call) |
 | `file_manager.py` | Audio upload + SHA-256 deduplication. Filename helpers: `extract_phone_from_filename()`, `extract_direction_from_filename()` (Inbound/Outbound), `extract_agent_code_from_filename()` |
 | `env_settings.py` | `.env` read/write (`read_env()`, `write_env()` — also updates `os.environ` of this process only), `env_bool()`, `mask_secret()`. The GPU / Whisper-combo helpers were removed with local inference |
-| `ui_helpers.py` | Shared CSS, login page, `init_page(page_key)` role guard, badges, processing launchers |
+| `ui_helpers.py` | Shared CSS, login page, `init_page(page_key)` role guard, badges, processing launchers. The login page throttles through `login_guard` and takes the client address from `_client_address()` (last `X-Forwarded-For` hop when Streamlit sees a loopback peer, i.e. behind the Caddy proxy) |
+| `login_guard.py` | Server-wide failed-login throttle in process memory: 5 failures → account locked 60 s, 20 failures from one client address → 5 min. Shared by every browser session (the old `st.session_state` counter reset on a new tab). Single process only — several app instances would need a shared store. No Streamlit import |
 | `customer_entry.py` | Validation + create/update/hide/restore rules for the manual data-entry page (phone normalisation, duplicate guards that skip the row being edited, warranty expiry maths); writes its own audit entries through `audit.record()` — no Streamlit import, so it is unit-testable. Also `set_warranty_status()` (Active/Cancel) |
 | `sales_orders.py` | Sales orders (SO): `FIELDS` (Thai template header + NAV English aliases per column), `read_upload()` (xlsx/csv, finds the header row, cp874 fallback), `parse_import()` (one row per line → orders grouped by SO number, row-numbered errors), value parsers (พ.ศ. dates, `1,234.50`, Excel-stripped leading 0), `complete_totals()`, `import_orders()` (upsert + one `import` audit entry), `save_manual()` / `hide()` / `restore()` / `link_customer()`, `template_bytes()`. No Streamlit import — see **Sales orders (SO)** |
 | `dashboard_report.py` | Dashboard export — `build_report()` → `pdf_report()` (fpdf2 + HarfBuzz Thai shaping, bars drawn as rectangles, own `wrap_text()`), `summary_csv()`, `calls_csv()` (utf-8-sig, formula-safe cells). Also owns the agent-score maths (`scored_calls`, `agent_summary`) that `10_Agent_Performance.py` imports, and `count_list_field()`. No Streamlit import |
@@ -73,7 +77,7 @@ streamlit run Home.py       # → http://localhost:8501
 | `case_workflow.py` | Case ownership rules — `claim()` / `release()` / `change_status()`; only the claimer changes status, Admin/Supervisor may release (not take) someone's claim, QA can't claim. Logs to audit + notifies Discord. No Streamlit import |
 | `labels.py` | Thai words for every code shown on screen (`call_status()`, `case_status()`, `sentiment()`, `field()` for audit-log field names) and `thai_time()` — UTC ISO → `dd/mm/yyyy HH:MM น.` in UTC+7. No Streamlit import |
 | `discord_notify.py` | Discord incoming-webhook sender (`DISCORD_WEBHOOK_URL`); background thread, never raises, `allowed_mentions` off, phone masked to last 4 digits |
-| `auth.py` | PBKDF2 hashing, DB/`.env` account lookup, role → page permission matrix (`ROLE_PERMISSIONS`, `can_access()`, `visible_pages()`) |
+| `auth.py` | PBKDF2 hashing, DB/`.env` account lookup, role → page permission matrix (`ROLE_PERMISSIONS`, `can_access()`, `visible_pages()`). First Admin: `SMARTVOICE_BOOTSTRAP_PASSWORD` when set (`bootstrap_admin_password()`; an unusable value — under 8 chars or `admin1234` — seeds **no** account rather than falling back), else the published `admin1234` |
 | `stt/` | STT sub-package: `orchestrator.py` (pyannoteAI upload → job → poll → segments, checkpoint `<audio>.smartvoice-api.json`, `MOCK_STT` transcripts), `audio.py` (`has_thai()` text helper only), `diarize.py` (speaker-label / word-grouping helpers, no model). `transcribe.py` was removed |
 
 `Home.py` is the router (see **Login & role-based navigation**), not just a landing page.
@@ -380,10 +384,16 @@ The old GPU detection, Whisper backend/device/compute selectors, `validate_whisp
 - **An `st.expander` body runs even while collapsed.** Anything slow inside it (network checks, big queries) runs on every rerun — cache it.
 - **Same widget key on two pages ≠ same widget.** Streamlit leaves the old value in session state but the new page's widget ignores it and resets to its first option. Persist cross-page values in a plain key and write them back every run (see `dashboard_common.restore_filters`).
 - **Network calls on a page must be cached** (`@st.cache_data`) — the Settings readiness checks used to hit Ollama/HuggingFace (~2.6 s) on every click.
-- **LLM output and tracebacks reach the logs.** `correct_speakers()` logs up to 400 characters of the model's answer, and `process_call()` stores the full traceback in `calls.error_msg` — both can contain customer speech. Keep that in mind before shipping logs to a central/cloud log service.
-- **The login lockout lives in `st.session_state`** (`ui_helpers._register_login_failure`), so a new browser session starts with a clean count. It is not server-side brute-force protection; add one before the app is reachable from the internet.
-- **The bootstrap `admin` / `admin1234` account is created whenever no account exists** (`auth.ensure_default_admin`). A fresh database on a public host exposes it until someone changes the password.
+- **Never log what was said on a call.** Logs leave the database's access controls (journald, a cloud log service). Log sizes, ids and types — `correct_speakers()`, `sanitize_evidence()` and `extract_json()` used to include up to 400 characters of the model's answer and now don't; `tests/test_log_privacy.py` fails if call text comes back. `process_call()` still stores the full traceback in `calls.error_msg` (DB, Admin/Supervisor only).
+- **The login lockout used to live in `st.session_state`**, so a new tab reset it. It is now `login_guard` (process-wide); keep it that way and keep `tests/test_login_page.py` passing.
+- **The published `admin` / `admin1234` bootstrap account must not exist on a public server.** `deploy/aws-ec2/install.sh` writes a random `SMARTVOICE_BOOTSTRAP_PASSWORD`; with it set the login page names the account but never prints a password. Unset (local use) the old behaviour is unchanged.
 - **UI labels are words, not emoji.** Menu entries use Material icons (`:material/...:`) next to the words, set explicitly so Streamlit doesn't pick up the emoji in some page file names. `tests/test_home_entrypoint.py` fails if a decorative icon comes back. The page *file names* (`pages/1_📤_Admin.py`) still contain emoji and `Home.py` routes to those exact paths — don't strip them.
+
+## AWS pilot deployment (`deploy/aws-ec2/`)
+
+Stage 1 = the whole app on **one Ubuntu 24.04 EC2**: Caddy (HTTPS, Let's Encrypt) → Streamlit on `127.0.0.1:8501` (systemd `smartvoice`, user `smartvoice`, may write only `data/` and `.env`), SQLite + audio on encrypted EBS, nightly `smartvoice-backup.timer` → `scripts/backup_db.py` → optional private S3 bucket. `install.sh --domain <name> [--s3-bucket <name>]` installs and updates; it keeps `data/` and `.env`. Step-by-step guide in Thai: `deploy/aws-ec2/README.md`. `tests/test_deploy_files.py` guards the safety properties (loopback bind, write paths, no published password, LF endings — `.gitattributes` pins LF for `*.sh` and `deploy/**`).
+
+This is a pilot, not production: single instance, processing threads inside the web process, `.env` secrets, no monitoring. PostgreSQL / S3 storage / workers remain the plan in `docs/cloud_migration_plan.md`. Nothing in this repo creates AWS resources.
 
 ## Pre-commit Checklist
 
@@ -405,6 +415,7 @@ Configure via `.env` in the repository root (copy from `.env.example`). Key vari
 - `DB_PATH` — defaults to `data/smartvoice.db`
 - `PROCESSING_STALE_MINUTES` — calls stuck in `processing` longer than this are reset when the app opens (default 180)
 - `SMARTVOICE_USERS` — break-glass accounts not in the DB (see `scripts/make_password_hash.py`)
+- `SMARTVOICE_BOOTSTRAP_PASSWORD` — first Admin password on a server (≥ 8 chars, not `admin1234`); unset = local default `admin1234`
 - `CASE_RECENCY_HOURS` — window for recency-based case attachment
 - `DISCORD_WEBHOOK_URL` — case claim/close notifications (blank = off)
 - `REPORT_FONT_PATH` — Thai `.ttf` for the PDF report (blank = Tahoma / Leelawadee / Noto Sans Thai / TLWG, first found; none → the PDF button is disabled)

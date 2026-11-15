@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import functools
 import os
 import re
 import secrets
@@ -37,6 +38,10 @@ _USERNAME_RE = re.compile(r"^[a-zA-Z0-9._-]+$")
 # is changed, so an unattended install can never silently stay on the default.
 DEFAULT_ADMIN_USERNAME = "admin"
 DEFAULT_ADMIN_PASSWORD = "admin1234"
+# A server reachable from the internet must not seed the published default:
+# the deploy script writes a random first password here, and the login page
+# then stops printing the default credentials.
+BOOTSTRAP_PASSWORD_ENV = "SMARTVOICE_BOOTSTRAP_PASSWORD"
 
 # ── Roles & page permissions ─────────────────────────────────────────────
 
@@ -260,12 +265,45 @@ def is_auth_configured() -> bool:
 
 # ── Account bootstrap ────────────────────────────────────────────────────
 
+def bootstrap_password_is_custom() -> bool:
+    """True when the operator set SMARTVOICE_BOOTSTRAP_PASSWORD (valid or not)."""
+    return bool(os.getenv(BOOTSTRAP_PASSWORD_ENV, "").strip())
+
+
+def bootstrap_password_error() -> str | None:
+    """Why the configured bootstrap password is unusable, or None when it is fine."""
+    if not bootstrap_password_is_custom():
+        return None
+    value = os.getenv(BOOTSTRAP_PASSWORD_ENV, "").strip()
+    if value == DEFAULT_ADMIN_PASSWORD:
+        return f"{BOOTSTRAP_PASSWORD_ENV} must not be the published default password"
+    return validate_password(value)
+
+
+def bootstrap_admin_password() -> str | None:
+    """Password for the first Admin account.
+
+    The shipped default when SMARTVOICE_BOOTSTRAP_PASSWORD is unset (local use,
+    unchanged behaviour); the configured value when it is set and acceptable;
+    None when it is set but unacceptable — then no account is seeded at all,
+    rather than falling back to a password everyone knows.
+    """
+    if not bootstrap_password_is_custom():
+        return DEFAULT_ADMIN_PASSWORD
+    if bootstrap_password_error():
+        return None
+    return os.getenv(BOOTSTRAP_PASSWORD_ENV, "").strip()
+
+
 def ensure_default_admin() -> bool:
     """Create the first Admin account when no account exists anywhere.
 
     Returns True when an account was created. Safe to call on every rerun.
     """
     if parse_users():
+        return False
+    password = bootstrap_admin_password()
+    if password is None:
         return False
     try:
         if db.count_users() > 0:
@@ -274,7 +312,7 @@ def ensure_default_admin() -> bool:
             username=DEFAULT_ADMIN_USERNAME,
             display_name="ผู้ดูแลระบบ",
             role="Admin",
-            password_hash=hash_password(DEFAULT_ADMIN_PASSWORD),
+            password_hash=hash_password(password),
         )
     except sqlite3.IntegrityError:
         # Another session seeded it first — nothing to do.
@@ -285,14 +323,30 @@ def ensure_default_admin() -> bool:
 
 
 def default_admin_password_unchanged() -> bool:
-    """True while the bootstrap admin still uses the shipped default password."""
+    """True while the bootstrap admin still uses its first password.
+
+    That is the shipped default or the operator's SMARTVOICE_BOOTSTRAP_PASSWORD
+    — both are known to someone other than the account owner.
+    """
     try:
         row = db.get_user_by_username(DEFAULT_ADMIN_USERNAME)
     except sqlite3.Error:
         return False
     if not row or not row["is_active"]:
         return False
-    return verify_password(DEFAULT_ADMIN_PASSWORD, row["password_hash"])
+    candidates = {DEFAULT_ADMIN_PASSWORD}
+    configured = bootstrap_admin_password()
+    if configured:
+        candidates.add(configured)
+    return _hash_matches_any(row["password_hash"], tuple(sorted(candidates)))
+
+
+@functools.lru_cache(maxsize=16)
+def _hash_matches_any(encoded_hash: str, candidates: tuple[str, ...]) -> bool:
+    # This runs on every rerun of the login page and the Admin sidebar, and each
+    # PBKDF2 check is deliberately slow. The stored hash changes whenever the
+    # password does, so caching on it can never return a stale answer.
+    return any(verify_password(candidate, encoded_hash) for candidate in candidates)
 
 
 # ── Authentication ───────────────────────────────────────────────────────

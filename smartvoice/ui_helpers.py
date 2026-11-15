@@ -5,17 +5,17 @@ import json
 import os
 import re
 import threading
-import time
 
 import streamlit as st
 
 from smartvoice import audit as audit_trail
-from smartvoice import case_workflow, db, labels, pipeline, processing_control
+from smartvoice import case_workflow, db, labels, login_guard, pipeline, processing_control
 from smartvoice.auth import (
     DEFAULT_ADMIN_PASSWORD,
     DEFAULT_ADMIN_USERNAME,
     PAGE_LABELS_TH,
     authenticate,
+    bootstrap_password_is_custom,
     can_access,
     change_password,
     default_admin_password_unchanged,
@@ -170,8 +170,8 @@ def inject_css():
 # the role always comes from the stored account, so a พนักงาน cannot grant
 # themselves Admin by typing it into a dropdown.
 
-LOGIN_MAX_ATTEMPTS = 5
-LOGIN_LOCK_SECONDS = 60
+LOGIN_MAX_ATTEMPTS = login_guard.ACCOUNT_MAX_FAILURES
+LOGIN_LOCK_SECONDS = login_guard.ACCOUNT_LOCK_SECONDS
 
 _SESSION_KEYS = (
     "current_user",
@@ -181,19 +181,48 @@ _SESSION_KEYS = (
     "current_user_source",
 )
 
-
-def _login_lock_remaining() -> int:
-    """Seconds left on the failed-attempt lockout (0 when not locked)."""
-    locked_until = st.session_state.get("_login_locked_until", 0.0)
-    return max(0, int(locked_until - time.time()))
+_LOOPBACK = {"127.0.0.1", "::1", "localhost"}
 
 
-def _register_login_failure() -> None:
-    fails = st.session_state.get("_login_fail_count", 0) + 1
-    st.session_state["_login_fail_count"] = fails
-    if fails >= LOGIN_MAX_ATTEMPTS:
-        st.session_state["_login_fail_count"] = 0
-        st.session_state["_login_locked_until"] = time.time() + LOGIN_LOCK_SECONDS
+def _client_address() -> str | None:
+    """The visitor's address for login throttling, or None when unknown.
+
+    Behind the pilot's reverse proxy Streamlit sees a loopback connection, so
+    the address comes from the last X-Forwarded-For entry — the one the proxy
+    itself appended (earlier entries are whatever the client sent). A direct
+    connection uses Streamlit's own view of the peer; local use returns None.
+    """
+    try:
+        peer = st.context.ip_address
+    except Exception:
+        peer = None
+    if peer and peer not in _LOOPBACK:
+        return peer
+    try:
+        forwarded = st.context.headers.get("X-Forwarded-For", "") or ""
+    except Exception:
+        forwarded = ""
+    hops = [hop.strip() for hop in forwarded.split(",") if hop.strip()]
+    return hops[-1] if hops else None
+
+
+def _login_lock_remaining(username: str | None = None, client: str | None = None) -> int:
+    """Seconds left on the failed-attempt lockout of this account or client."""
+    keys = [login_guard.client_key(client)]
+    if username is not None:
+        keys.append(login_guard.account_key(username))
+    return max(login_guard.lock_remaining(key) for key in keys)
+
+
+def _register_login_failure(username: str | None, client: str | None) -> None:
+    login_guard.register_failure(
+        login_guard.account_key(username),
+        login_guard.ACCOUNT_MAX_FAILURES, login_guard.ACCOUNT_LOCK_SECONDS,
+    )
+    login_guard.register_failure(
+        login_guard.client_key(client),
+        login_guard.CLIENT_MAX_FAILURES, login_guard.CLIENT_LOCK_SECONDS,
+    )
 
 
 def audit(
@@ -223,8 +252,7 @@ def start_session(record) -> None:
     st.session_state["current_username"] = record.username
     st.session_state["current_user_id"] = record.user_id
     st.session_state["current_user_source"] = record.source
-    st.session_state["_login_fail_count"] = 0
-    st.session_state["_login_locked_until"] = 0.0
+    login_guard.reset(login_guard.account_key(record.username))
     audit_trail.record(
         audit_trail.LOGIN,
         audit_trail.ENTITY_SESSION,
@@ -258,49 +286,68 @@ def render_login_page():
         st.markdown("## เข้าสู่ระบบ SmartVoice")
         st.caption("ระบบวิเคราะห์สายสนทนา Call Center — กรุณาเข้าสู่ระบบด้วยบัญชีพนักงาน")
 
-        locked_for = _login_lock_remaining()
-        if locked_for:
+        client = _client_address()
+        client_locked = _login_lock_remaining(client=client)
+        if client_locked:
             st.error(
-                f"ใส่รหัสผ่านผิดเกิน {LOGIN_MAX_ATTEMPTS} ครั้ง "
-                f"— กรุณารออีก {locked_for} วินาทีแล้วลองใหม่"
+                "มีการใส่รหัสผ่านผิดจากเครื่องนี้หลายครั้งเกินไป "
+                f"— กรุณารออีก {client_locked} วินาทีแล้วลองใหม่"
             )
 
         with st.form("_login_form"):
             username = st.text_input("ชื่อผู้ใช้ (Username)", key="_login_username")
             password = st.text_input("รหัสผ่าน", type="password", key="_login_password")
             submitted = st.form_submit_button(
-                "เข้าสู่ระบบ", use_container_width=True, disabled=bool(locked_for)
+                "เข้าสู่ระบบ", use_container_width=True, disabled=bool(client_locked)
             )
 
-        if submitted and not locked_for:
-            record = authenticate(username, password)
+        if submitted and not client_locked:
+            name = (username or "").strip()
+            # A locked account stays locked even with the right password; the
+            # lock is server-wide, so a new tab or browser does not reset it.
+            locked_for = _login_lock_remaining(name, client)
+            record = None if locked_for else authenticate(username, password)
             if record:
                 start_session(record)
                 st.rerun()
             else:
-                _register_login_failure()
+                if not locked_for:
+                    _register_login_failure(name, client)
+                locked_for = _login_lock_remaining(name, client)
                 # Failed attempts are the entries a security review asks for first.
                 audit_trail.record(
                     audit_trail.LOGIN_FAILED,
                     audit_trail.ENTITY_SESSION,
-                    entity_label=(username or "").strip() or "—",
-                    actor=(username or "").strip() or None,
-                    changes={"locked": bool(_login_lock_remaining())},
+                    entity_label=name or "—",
+                    actor=name or None,
+                    changes={"locked": bool(locked_for)},
                 )
-                remaining = LOGIN_MAX_ATTEMPTS - st.session_state.get("_login_fail_count", 0)
-                if _login_lock_remaining():
-                    st.error(f"ผิดหลายครั้งเกินไป — ถูกล็อก {LOGIN_LOCK_SECONDS} วินาที")
+                if locked_for:
+                    st.error(
+                        f"ใส่รหัสผ่านผิดหลายครั้งเกินไป — บัญชีนี้ถูกล็อก "
+                        f"กรุณารออีก {locked_for} วินาทีแล้วลองใหม่"
+                    )
                 else:
+                    remaining = login_guard.failures_left(
+                        login_guard.account_key(name), LOGIN_MAX_ATTEMPTS
+                    )
                     st.error(
                         f"ชื่อผู้ใช้หรือรหัสผ่านไม่ถูกต้อง (ลองได้อีก {remaining} ครั้ง)"
                     )
 
         if default_admin_password_unchanged():
-            st.info(
-                "เข้าใช้งานครั้งแรก: ใช้บัญชี "
-                f"`{DEFAULT_ADMIN_USERNAME}` / `{DEFAULT_ADMIN_PASSWORD}` "
-                "แล้วเปลี่ยนรหัสผ่านทันทีที่กล่องบัญชีใน sidebar"
-            )
+            if bootstrap_password_is_custom():
+                # The server operator set the first password; never print it.
+                st.info(
+                    f"เข้าใช้งานครั้งแรก: ใช้บัญชี `{DEFAULT_ADMIN_USERNAME}` กับรหัสผ่านเริ่มต้น"
+                    "ที่ผู้ดูแลระบบตั้งไว้ แล้วเปลี่ยนรหัสผ่านทันทีที่กล่องบัญชีใน sidebar"
+                )
+            else:
+                st.info(
+                    "เข้าใช้งานครั้งแรก: ใช้บัญชี "
+                    f"`{DEFAULT_ADMIN_USERNAME}` / `{DEFAULT_ADMIN_PASSWORD}` "
+                    "แล้วเปลี่ยนรหัสผ่านทันทีที่กล่องบัญชีใน sidebar"
+                )
 
 
 def render_sidebar_account():

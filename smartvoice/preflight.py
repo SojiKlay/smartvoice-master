@@ -2,7 +2,7 @@ import os
 import sys
 from dataclasses import dataclass
 
-from smartvoice.auth import default_admin_password_unchanged, is_auth_configured
+from smartvoice.auth import bootstrap_password_error, default_admin_password_unchanged, is_auth_configured
 from smartvoice.config import MOCK_STT, api_settings
 
 
@@ -52,6 +52,12 @@ def run_preflight_checks() -> list[CheckResult]:
                     else "staff accounts are configured" if is_auth_configured()
                     else "no account found; open the app once to seed the bootstrap admin"),
     ]
+    bootstrap_error = bootstrap_password_error()
+    if bootstrap_error:
+        checks.append(CheckResult(
+            "Bootstrap password", False,
+            f"{bootstrap_error}; no first Admin account is created until it is fixed", "error",
+        ))
     for name, readiness in (("Pyannote access", get_pyannote_access_readiness), ("Typhoon API", get_llm_readiness)):
         ready, detail = readiness()
         checks.append(CheckResult(name, ready, detail, "error"))
