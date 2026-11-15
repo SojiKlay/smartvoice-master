@@ -49,7 +49,7 @@ run.bat                 # Windows
 ./run.sh                # Linux/macOS
 ```
 
-**Test baseline ล่าสุด:** 541 tests (ทั้ง `tests/` รวม `test_config.py`) ต้องผ่าน 100% ก่อน commit ทุกครั้ง — ตรวจซ้ำ 15 พ.ย. 2026: 541 passed บน Python 3.12 ด้วย env ด้านบน เป็น tests ที่ mock API **ไม่ใช่หลักฐาน** ว่า live API / PostgreSQL / Cloud ใช้งานได้
+**Test baseline ล่าสุด:** 596 tests (ทั้ง `tests/` รวม `test_config.py`) ต้องผ่าน 100% ก่อน commit ทุกครั้ง — 15 พ.ย. 2026: 596 passed บน Python 3.12 ด้วย env ด้านบน (เดิม 541 ก่อนเพิ่ม tests ของงาน security/deploy สำหรับ AWS pilot) เป็น tests ที่ mock API **ไม่ใช่หลักฐาน** ว่า live API / PostgreSQL / Cloud ใช้งานได้
 
 **ก่อนประมวลผลสายจริง:** ต้องตั้ง `PYANNOTE_API_KEY` และ `TYPHOON_API_KEY` (หน้า Settings หรือ `.env`) ทุกสายจะส่งเสียงไป pyannoteAI และส่งข้อความไป Typhoon และมีค่าใช้จ่าย ใช้เฉพาะเสียงที่ได้รับอนุญาตให้ส่งออกภายนอก
 
@@ -98,6 +98,7 @@ smartvoice/
 │   ├── customer_entry.py       # กติกา validate / บันทึก / ซ่อน / กู้คืน / ยกเลิกทะเบียน ของหน้าเพิ่มข้อมูล
 │   ├── env_settings.py         # อ่าน/เขียน .env (read_env / write_env / mask_secret) — GPU/combo helpers ถูกถอดแล้ว
 │   ├── preflight.py            # Readiness checks: Python, โหมดสาธิต, รหัส bootstrap, มี API key หรือไม่ (ไม่เรียก API)
+│   ├── login_guard.py          # กันเดารหัสผ่านฝั่ง server (นับรวมทุก session ใน process)
 │   ├── logger.py               # Rotating file logger
 │   └── stt/                    # Speech-to-Text sub-package
 │       ├── orchestrator.py     # pyannoteAI: upload → job → poll → segments + checkpoint + MOCK_STT
@@ -106,6 +107,7 @@ smartvoice/
 │                               # (transcribe.py ถูกถอดออกพร้อม local inference)
 ├── tests/                      # pytest unit tests
 ├── data/                       # 🚫 gitignored runtime data (audio, db, logs, models, warranty_proofs)
+├── deploy/aws-ec2/             # ติดตั้งบน EC2 เครื่องเดียว (install.sh, systemd, Caddy, backup) + README ภาษาไทย
 └── docs/                       # Architecture, DB design, user manual
 ```
 
@@ -274,6 +276,13 @@ Filename รูปแบบ `YYYYMMDDHHMMSS-CALLID.NNN-{AGENT|PHONE}-{PHONE|AGEN
 
 ทั้งคู่มี `--apply` flag (default = dry-run)
 
+## 6.6.1 AWS pilot (`deploy/aws-ec2/`) และ backup
+
+Stage 1 = ทั้งระบบบน EC2 Ubuntu 24.04 เครื่องเดียว: Caddy (HTTPS) → Streamlit ที่ `127.0.0.1:8501` (systemd `smartvoice`, เขียนได้เฉพาะ `data/` และ `.env`) → SQLite + ไฟล์เสียงบน EBS เข้ารหัส → backup ทุกคืนด้วย `scripts/backup_db.py` (snapshot แบบ read-only + `integrity_check`) แล้ว sync ไป S3 ส่วนตัวถ้าตั้ง bucket
+- `sudo bash deploy/aws-ec2/install.sh --domain <ชื่อ> [--s3-bucket <ชื่อ>]` ใช้ทั้งติดตั้งและอัปเดต ไม่แตะ `data/` และ `.env`; คู่มือทีละขั้นที่ `deploy/aws-ec2/README.md`
+- `tests/test_deploy_files.py` ตรวจคุณสมบัติด้านความปลอดภัยของไฟล์ deploy (bind loopback, write paths, ไม่มีรหัสเริ่มต้น, LF) — `.gitattributes` บังคับ LF ให้ `*.sh` และ `deploy/**`
+- เป็นขั้นทดลอง ไม่ใช่ production: เครื่องเดียว, ประมวลผลใน process เว็บ, ความลับใน `.env`, ยังไม่มี monitoring — repo นี้ไม่สร้าง AWS resource ใด ๆ เอง
+
 ## 6.7 Settings page (`pages/4_Settings.py`)
 
 ไม่ใช้ `st.form` — widget ทุกตัวมี `key=` แล้วปุ่ม `st.button("บันทึกการตั้งค่า")` บันทึกทุกค่าลง `.env` พร้อมกัน
@@ -394,7 +403,7 @@ Dashboard เดิมเป็นหน้าเดียว ~1,000 บรร�
 PowerShell ใน Windows → ตั้ง `Cwd` แทน `cd && ...`
 
 ### 7.2 `test_config.py` รันรวมกับชุดเต็มได้แล้ว
-เดิมไฟล์นี้แก้ env vars และต้องใช้ torch จึงสั่งให้ `--ignore=tests\test_config.py` ตอนนี้เหลือแค่ tests ของ helper ข้อความ/การจัดกลุ่ม จึงรันรวมกับชุดเต็ม (นับรวมใน 541)
+เดิมไฟล์นี้แก้ env vars และต้องใช้ torch จึงสั่งให้ `--ignore=tests\test_config.py` ตอนนี้เหลือแค่ tests ของ helper ข้อความ/การจัดกลุ่ม จึงรันรวมกับชุดเต็ม (นับรวมใน baseline)
 
 ### 7.3 อย่าแก้ `_AGENT_MARKERS` / `_CUSTOMER_MARKERS` แบบเดาๆ
 markers ใช้กับ `_enforce_role_rules` ที่ scoring ตำแหน่ง + role — เพิ่ม marker ที่กำกวมจะทำให้ flip ผิด ทำ regression test ครอบคลุมก่อนเพิ่ม
@@ -433,14 +442,14 @@ Streamlit ทิ้งค่าเก่าไว้ใน session state แต�
 ### 7.14 fpdf2 ตัดบรรทัดภาษาไทยแบบตัวอักษรค้าง
 `multi_cell(..., wrapmode=WrapMode.CHAR)` ค้างไม่จบเมื่อเจอข้อความไทยยาวไม่มีช่องว่างเต็มความกว้าง — รายงานตัดบรรทัดเองด้วย `dashboard_report.wrap_text()` (ไม่แยกพยัญชนะจากสระ/วรรณยุกต์) แล้ววาดทีละบรรทัดด้วย `cell()`
 
-### 7.15 ข้อความลูกค้าหลุดเข้า log
-`correct_speakers()` log คำตอบของโมเดลสูงสุด 400 ตัวอักษร และ `process_call()` เก็บ traceback เต็มใน `calls.error_msg` — ทั้งสองอาจมีคำพูดลูกค้า ระวังก่อนส่ง log ไประบบ log กลางบน Cloud
+### 7.15 ห้าม log สิ่งที่พูดในสาย
+log ออกนอกการควบคุมสิทธิ์ของฐานข้อมูล (journald, ระบบ log กลางบน Cloud) — log ได้แค่ขนาด/id/ชนิด เดิม `correct_speakers()`, `sanitize_evidence()` และ `extract_json()` ใส่คำตอบของโมเดลสูงสุด 400 ตัวอักษร ตอนนี้ไม่ใส่แล้ว และ `tests/test_log_privacy.py` จะ fail ถ้ากลับมา; `process_call()` ยังเก็บ traceback เต็มใน `calls.error_msg` (ในฐานข้อมูล เห็นเฉพาะ Admin/Supervisor)
 
-### 7.16 การล็อกหลังใส่รหัสผิดอยู่ใน session ของเบราว์เซอร์
-`ui_helpers._register_login_failure` เก็บจำนวนครั้งใน `st.session_state` เปิด session ใหม่ก็นับใหม่ — ไม่ใช่การกันเดารหัสฝั่ง server ต้องเพิ่มก่อนเปิดแอปสู่อินเทอร์เน็ต
+### 7.16 การล็อกหลังใส่รหัสผิดต้องอยู่ฝั่ง server
+เดิมเก็บใน `st.session_state` เปิดแท็บใหม่ก็นับใหม่ ตอนนี้ใช้ `smartvoice/login_guard.py` (นับรวมทั้ง process: ผิด 5 ครั้ง/บัญชี → ล็อก 60 วินาที, ผิด 20 ครั้ง/IP → 5 นาที) ห้ามย้ายกลับไป session_state; `tests/test_login_page.py` ตรวจว่าล็อกข้าม session ได้จริง — ถ้าวันหนึ่งรันหลาย instance ต้องย้ายตัวนับไปที่เก็บกลาง
 
-### 7.17 บัญชี bootstrap `admin` / `admin1234`
-`auth.ensure_default_admin()` สร้างให้ทุกครั้งที่ไม่มีบัญชีใดเลย ฐานข้อมูลใหม่บนเครื่องที่เปิดสู่อินเทอร์เน็ตจะมีรหัสที่ทุกคนรู้จนกว่าจะมีคนเปลี่ยน
+### 7.17 บัญชี bootstrap บน server ห้ามใช้ `admin1234`
+`auth.ensure_default_admin()` ใช้ `SMARTVOICE_BOOTSTRAP_PASSWORD` ถ้าตั้งไว้ (ค่าที่สั้นกว่า 8 ตัวหรือเป็น `admin1234` → ไม่สร้างบัญชีเลย ไม่ถอยกลับไปใช้รหัสที่ทุกคนรู้) และหน้า login จะไม่แสดงรหัส; `deploy/aws-ec2/install.sh` สุ่มค่าให้ ถ้าไม่ตั้ง (ใช้ในเครื่อง) พฤติกรรมเดิมไม่เปลี่ยน
 
 ### 7.18 ประมวลผลซ้ำมีค่าใช้จ่าย
 STT ใช้ checkpoint `<ไฟล์เสียง>.smartvoice-api.json` ซ้ำได้ แต่ LLM ถูกเรียกใหม่ทุกครั้ง; checkpoint ค้าง `submitting` ต้องตรวจประวัติงานที่ pyannoteAI ก่อนลบ; กดหยุดในแอปไม่ยกเลิกงานฝั่งผู้ให้บริการ; checkpoint มี transcript ดิบ ห้าม commit หรือ log

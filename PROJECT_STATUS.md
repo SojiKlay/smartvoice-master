@@ -1,5 +1,23 @@
 # SmartVoice — สถานะสำหรับพัฒนาต่อ
 
+## Stage 1: เตรียมขึ้น AWS EC2 ให้บริษัททดลองใช้ — 15 พฤศจิกายน 2026 (branch `feat/aws-pilot-stage1`)
+
+เป้าหมาย: ทั้งระบบอยู่บน AWS (ไม่รันบนเครื่องพนักงาน) ให้ตัวแทนบริษัทเข้าทดลองผ่าน HTTPS — แบบ EC2 เครื่องเดียว ยังคง SQLite + ไฟล์บน EBS; PostgreSQL / S3 storage / worker ยังเป็นแผนขั้นถัดไป
+
+**ทำแล้ว (มี tests, ทดสอบด้วย mock เท่านั้น):**
+- กันเดารหัสผ่านฝั่ง server: `smartvoice/login_guard.py` — ผิด 5 ครั้ง/บัญชี → ล็อก 60 วินาที, ผิด 20 ครั้ง/IP → 5 นาที นับรวมทุก session (เดิมอยู่ใน `st.session_state` เปิดแท็บใหม่ก็นับใหม่) — IP มาจาก `X-Forwarded-For` hop สุดท้ายเมื่ออยู่หลัง Caddy
+- รหัส bootstrap บน server: `SMARTVOICE_BOOTSTRAP_PASSWORD` (auth.py) — ตั้งไว้แล้วหน้า login ไม่แสดงรหัส, ค่าใช้ไม่ได้ (สั้นกว่า 8 / เป็น admin1234) จะไม่สร้างบัญชีเลย; preflight แจ้ง error; ไม่ตั้ง = พฤติกรรมเดิมในเครื่อง
+- ไม่ log คำพูดลูกค้า: `correct_speakers()`, `sanitize_evidence()`, `extract_json()` log แค่ขนาด (ยืนยันว่า tests ใหม่ fail กับโค้ดเดิมทั้ง 5 ข้อ)
+- `scripts/backup_db.py`: snapshot SQLite แบบ read-only + `integrity_check` + เก็บ N ชุดล่าสุด
+- `deploy/aws-ec2/`: `install.sh` (Ubuntu 24.04: venv, ฟอนต์ไทย, Caddy HTTPS, systemd, รหัส bootstrap สุ่ม, ไม่แตะ data/.env ตอนอัปเดต), `smartvoice.service` (bind 127.0.0.1, เขียนได้เฉพาะ data/ และ .env), `Caddyfile.template`, backup timer ทุกคืน → S3 (SSE), คู่มือภาษาไทย `deploy/aws-ec2/README.md`; `.gitattributes` บังคับ LF
+- **Tests: 596 passed** (เดิม 541 + ใหม่ 55) บน Python 3.12.10
+
+**ยังไม่ได้ทำ / ยังไม่ยืนยัน:**
+- ยังไม่เคยรัน `install.sh` บน EC2 จริง (ตรวจแค่ `bash -n` และ tests ของเนื้อไฟล์) — การติดตั้งจริงครั้งแรกต้องตรวจทีละขั้นตามคู่มือ
+- ยังไม่เคยเรียก pyannoteAI / Typhoon จริง, ยังไม่ได้สร้าง AWS resource ใด ๆ, ยังไม่ซ้อม restore
+- เรื่องที่ต้องตัดสินก่อนเปิดให้บริษัทใช้: บัญชี AWS (Learner Lab มีเวลา session จำกัด), ข้อมูลที่ใช้ทดลอง (อนุมัติส่งเสียงจริงไป API หรือใช้โหมดสาธิต), ชื่อโดเมน, งบ API
+- ยังไม่ commit/push
+
 ## ตรวจรับช่วงงาน (ผู้พัฒนาใหม่) — 15 พฤศจิกายน 2026
 
 ตรวจ branch `docs/cloud-migration-handover` ที่ `5ffd599` จาก clone ใหม่ อ่านเอกสารและ source แล้วรัน tests ซ้ำ ไม่ได้แก้ application code, `.env` หรือข้อมูล ไม่เรียก API จริง ไม่เข้า AWS

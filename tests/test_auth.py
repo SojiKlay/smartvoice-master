@@ -15,6 +15,7 @@ def temp_db(monkeypatch):
     os.close(fd)
     monkeypatch.setenv("DB_PATH", path)
     monkeypatch.setenv("SMARTVOICE_USERS", "")
+    monkeypatch.delenv(auth.BOOTSTRAP_PASSWORD_ENV, raising=False)
     db.init_db()
     yield path
     try:
@@ -170,6 +171,55 @@ def test_ensure_default_admin_seeds_once(temp_db):
     record = auth.authenticate(auth.DEFAULT_ADMIN_USERNAME, auth.DEFAULT_ADMIN_PASSWORD)
     assert record is not None
     assert record.role == "Admin"
+    assert auth.default_admin_password_unchanged() is True
+
+
+def test_bootstrap_password_from_env_replaces_the_published_default(temp_db, monkeypatch):
+    monkeypatch.setenv(auth.BOOTSTRAP_PASSWORD_ENV, "  first-Server-pass  ")
+
+    assert auth.bootstrap_password_is_custom() is True
+    assert auth.bootstrap_password_error() is None
+    assert auth.ensure_default_admin() is True
+
+    assert auth.authenticate(auth.DEFAULT_ADMIN_USERNAME, auth.DEFAULT_ADMIN_PASSWORD) is None
+    assert auth.authenticate(auth.DEFAULT_ADMIN_USERNAME, "first-Server-pass") is not None
+    # Still the operator's first password, known to someone else — keep nagging.
+    assert auth.default_admin_password_unchanged() is True
+
+
+def test_bootstrap_password_change_clears_the_warning(temp_db, monkeypatch):
+    monkeypatch.setenv(auth.BOOTSTRAP_PASSWORD_ENV, "first-Server-pass")
+    auth.ensure_default_admin()
+    admin = db.get_user_by_username(auth.DEFAULT_ADMIN_USERNAME)
+
+    assert auth.change_password(
+        admin["id"], "first-Server-pass", "owner-chosen-pass", "owner-chosen-pass"
+    ) is None
+    assert auth.default_admin_password_unchanged() is False
+
+
+@pytest.mark.parametrize("value", ["short", auth.DEFAULT_ADMIN_PASSWORD])
+def test_unusable_bootstrap_password_seeds_nothing(temp_db, monkeypatch, value):
+    """A bad value must never fall back to the password everyone knows."""
+    monkeypatch.setenv(auth.BOOTSTRAP_PASSWORD_ENV, value)
+
+    assert auth.bootstrap_password_error()
+    assert auth.bootstrap_admin_password() is None
+    assert auth.ensure_default_admin() is False
+    assert db.count_users() == 0
+
+
+def test_unset_bootstrap_password_keeps_local_behaviour(temp_db):
+    assert auth.bootstrap_password_is_custom() is False
+    assert auth.bootstrap_password_error() is None
+    assert auth.bootstrap_admin_password() == auth.DEFAULT_ADMIN_PASSWORD
+
+
+def test_default_password_still_flagged_after_env_is_set_later(temp_db, monkeypatch):
+    """An admin seeded with admin1234 before the server got its env value."""
+    auth.ensure_default_admin()
+    monkeypatch.setenv(auth.BOOTSTRAP_PASSWORD_ENV, "first-Server-pass")
+
     assert auth.default_admin_password_unchanged() is True
 
 
