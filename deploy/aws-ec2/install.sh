@@ -56,7 +56,7 @@ if [[ ! -f "$SRC_DIR/Home.py" || ! -f "$SRC_DIR/requirements.txt" ]]; then
     exit 1
 fi
 
-for tool in flock systemctl python3 rsync; do
+for tool in flock systemctl apt-get; do
     command -v "$tool" >/dev/null || { echo "Missing prerequisite: $tool" >&2; exit 1; }
 done
 [[ -d /run/systemd/system ]] || { echo "systemd is required" >&2; exit 1; }
@@ -172,6 +172,10 @@ apt-get update -q
 apt-get install -y -q python3 python3-venv rsync curl gnupg \
     debian-keyring debian-archive-keyring apt-transport-https \
     fonts-thai-tlwg fonts-noto-core postgresql-client
+
+for tool in python3 rsync; do
+    command -v "$tool" >/dev/null || { echo "Missing prerequisite after package installation: $tool" >&2; exit 1; }
+done
 
 if ! command -v caddy >/dev/null 2>&1; then
     echo "==> Caddy (official apt repository)"

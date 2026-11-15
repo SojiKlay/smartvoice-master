@@ -133,6 +133,44 @@ def test_release_is_prepared_before_services_stop_and_live_copy():
 
 
 @pytest.mark.skipif(shutil.which("bash") is None, reason="bash not available")
+@pytest.mark.parametrize("outcome", ["installed", "missing", "apt_failed"])
+def test_prerequisites_on_host_without_rsync(tmp_path, outcome):
+    source = _text("install.sh")
+    start = source.index("for tool in ")
+    preflight = source[start:source.index("\ndone", start) + len("\ndone")]
+    packages = source[source.index('echo "==> packages"'):source.index("if ! command -v caddy")]
+    script = r'''
+set -euo pipefail
+installed=0
+command() {
+    if [[ "$1" == -v && ( "$2" == rsync || "$2" == python3 ) ]]; then
+        printf '%s:%s\n' "$2" "$installed" >> checks
+        [[ "$installed" == 1 && ( "$2" != rsync || "$OUTCOME" != missing ) ]]
+    else
+        builtin command "$@" >/dev/null 2>&1 || [[ "$1" == -v ]]
+    fi
+}
+apt-get() {
+    printf '%s\n' "$*" >> packages
+    if [[ "$1" == install ]]; then
+        [[ " $* " == *" rsync "* ]] || return 90
+        [[ "$OUTCOME" != apt_failed ]] || return 91
+        installed=1
+    fi
+}
+'''
+    result = subprocess.run(["bash", "-c", script + preflight + "\n" + packages],
+                            cwd=tmp_path, env=dict(os.environ, OUTCOME=outcome),
+                            capture_output=True, text=True)
+    assert (tmp_path / "packages").is_file(), result.stderr
+    assert (result.returncode == 0) == (outcome == "installed"), result.stderr
+    if outcome != "apt_failed":
+        assert (tmp_path / "checks").read_text().splitlines() == ["python3:1", "rsync:1"]
+    if outcome == "apt_failed":
+        assert not (tmp_path / "checks").exists()
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="bash not available")
 @pytest.mark.parametrize("failure", ["none", "prepare", "copy", "start", "health"])
 def test_release_activation_and_rollback(tmp_path, failure):
     source = _text("install.sh")
