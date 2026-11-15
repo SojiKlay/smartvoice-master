@@ -33,6 +33,16 @@ def test_hash_password_verifies_round_trip():
     assert not auth.verify_password("wrong-password", encoded)
 
 
+@pytest.mark.parametrize("password", ["", " ", "\t\n"])
+def test_explicit_empty_bootstrap_never_seeds_published_password(temp_db, monkeypatch, password):
+    monkeypatch.setenv(auth.BOOTSTRAP_PASSWORD_ENV, password)
+
+    assert auth.bootstrap_password_error() is not None
+    assert auth.bootstrap_admin_password() is None
+    assert auth.ensure_default_admin() is False
+    assert db.count_users() == 0
+
+
 def test_verify_password_rejects_garbage_hash():
     assert not auth.verify_password("secret-password", "not-a-hash")
     assert not auth.verify_password("secret-password", None)

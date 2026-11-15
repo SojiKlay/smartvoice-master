@@ -25,6 +25,8 @@ CLIENT_LOCK_SECONDS = 300
 _MAX_TRACKED_KEYS = 10_000
 
 _lock = threading.Lock()
+_attempt_lock = threading.Lock()
+_last_seen: dict[str, float] = {}
 # key -> [failure_count, locked_until_epoch_seconds]
 _entries: dict[str, list[float]] = {}
 
@@ -44,13 +46,16 @@ def _prune(now: float) -> None:
     """Drop entries that are no longer locked once the table grows too large."""
     if len(_entries) < _MAX_TRACKED_KEYS:
         return
-    for key in [k for k, (_, until) in _entries.items() if until <= now]:
+    for key in [k for k, (_, until) in _entries.items()
+                if until <= now and now - _last_seen[k] >= CLIENT_LOCK_SECONDS]:
         del _entries[key]
+        _last_seen.pop(key, None)
     # Still full (an active flood): forget the oldest-inserted unlocked counters.
     if len(_entries) >= _MAX_TRACKED_KEYS:
         for key in list(_entries)[: len(_entries) - _MAX_TRACKED_KEYS + 1]:
-            if _entries[key][1] <= now:
+            if _entries[key][1] <= now and now - _last_seen[key] >= CLIENT_LOCK_SECONDS:
                 del _entries[key]
+                _last_seen.pop(key, None)
 
 
 def lock_remaining(key: str | None, now: float | None = None) -> int:
@@ -59,8 +64,11 @@ def lock_remaining(key: str | None, now: float | None = None) -> int:
         return 0
     now = time.time() if now is None else now
     with _lock:
+        _prune(now)
         entry = _entries.get(key)
         if not entry:
+            if len(_entries) >= _MAX_TRACKED_KEYS:
+                return max(1, int(min(_last_seen.values()) + CLIENT_LOCK_SECONDS - now + 0.999))
             return 0
         remaining = entry[1] - now
     return max(0, int(remaining + 0.999))
@@ -74,9 +82,12 @@ def register_failure(key: str | None, max_failures: int, lock_seconds: int,
     now = time.time() if now is None else now
     with _lock:
         _prune(now)
+        if key not in _entries and len(_entries) >= _MAX_TRACKED_KEYS:
+            return False
         entry = _entries.setdefault(key, [0, 0.0])
         if entry[1] > now:
             return False
+        _last_seen[key] = now
         entry[0] += 1
         if entry[0] >= max_failures:
             entry[0] = 0
@@ -101,9 +112,27 @@ def reset(key: str | None) -> None:
         return
     with _lock:
         _entries.pop(key, None)
+        _last_seen.pop(key, None)
 
 
 def clear_all() -> None:
     """Forget everything — for tests."""
     with _lock:
         _entries.clear()
+        _last_seen.clear()
+
+
+def authenticate_attempt(username, password, client, verify):
+    account = account_key(username)
+    address = client_key(client)
+    with _attempt_lock:
+        remaining = max(lock_remaining(account), lock_remaining(address))
+        if remaining:
+            return None, remaining
+        record = verify(username, password)
+        if record:
+            reset(account)
+        else:
+            register_failure(account, ACCOUNT_MAX_FAILURES, ACCOUNT_LOCK_SECONDS)
+            register_failure(address, CLIENT_MAX_FAILURES, CLIENT_LOCK_SECONDS)
+        return record, max(lock_remaining(account), lock_remaining(address))

@@ -61,7 +61,7 @@ export DEBIAN_FRONTEND=noninteractive
 apt-get update -q
 apt-get install -y -q python3 python3-venv rsync curl gnupg \
     debian-keyring debian-archive-keyring apt-transport-https \
-    fonts-thai-tlwg fonts-noto-core
+    fonts-thai-tlwg fonts-noto-core postgresql-client
 
 if ! command -v caddy >/dev/null 2>&1; then
     echo "==> Caddy (official apt repository)"
@@ -87,12 +87,11 @@ echo "==> code -> $APP (data/ and .env are kept)"
 install -d -o root -g root -m 0755 "$APP"
 # rsync applies the first matching rule, so the .env.example include comes first.
 # Excluded paths are also protected from --delete, so data/ and .env survive.
-rsync -a --delete \
+rsync -a --delete --chown=root:root \
     --include '/.env.example' \
     --exclude '/data/' --exclude '/.env' --exclude '/.env.*' --exclude '/.git/' \
     --exclude '/.venv/' --exclude '__pycache__/' --exclude '/.pytest_cache/' \
     "$SRC_DIR/" "$APP/"
-chown -R root:root "$APP"
 chmod 0755 "$APP/deploy/aws-ec2/backup.sh"
 install -d -o smartvoice -g smartvoice -m 0700 "$APP/data"
 
@@ -110,6 +109,25 @@ if [[ ! -f "$APP/.env" ]]; then
 fi
 chown smartvoice:smartvoice "$APP/.env"
 chmod 0600 "$APP/.env"
+
+PYTHONPATH="$APP" PYTHON_DOTENV_DISABLED=1 "$VENV/bin/python" - "$APP/.env" <<'PY'
+import os
+import sys
+
+from dotenv import dotenv_values
+from smartvoice import auth, database_backend
+
+values = dotenv_values(sys.argv[1])
+os.environ[auth.BOOTSTRAP_PASSWORD_ENV] = values.get(auth.BOOTSTRAP_PASSWORD_ENV) or ""
+if auth.bootstrap_password_error():
+    sys.exit("Set a valid SMARTVOICE_BOOTSTRAP_PASSWORD in the server .env before starting services.")
+os.environ["DATABASE_URL"] = values.get("DATABASE_URL") or ""
+if os.environ["DATABASE_URL"]:
+    try:
+        database_backend.check_schema()
+    except Exception:
+        sys.exit("PostgreSQL is not ready. Run python -m scripts.migrate_postgres --apply from the app directory before starting services.")
+PY
 
 echo "==> backup settings"
 install -d -o root -g root -m 0755 /etc/smartvoice

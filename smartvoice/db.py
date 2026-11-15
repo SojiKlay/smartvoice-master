@@ -3,6 +3,12 @@ import os
 import sqlite3
 from datetime import datetime, timedelta, timezone
 
+from smartvoice import database_backend
+
+
+class LastAdminError(sqlite3.IntegrityError):
+    pass
+
 
 def _now() -> str:
     """Return current UTC timestamp as ISO 8601 string (timezone-aware)."""
@@ -14,6 +20,8 @@ def get_db_path() -> str:
 
 
 def get_connection() -> sqlite3.Connection:
+    if database_backend.database_url():
+        return database_backend.connect()
     db_path = get_db_path()
     os.makedirs(os.path.dirname(db_path), exist_ok=True)
     conn = sqlite3.connect(db_path)
@@ -24,6 +32,9 @@ def get_connection() -> sqlite3.Connection:
 
 
 def init_db() -> None:
+    if database_backend.database_url():
+        database_backend.check_schema()
+        return
     conn = get_connection()
     with conn:
         conn.execute("""
@@ -533,8 +544,8 @@ def delete_call(call_id: int) -> int:
     with conn:
         conn.execute("DELETE FROM calls WHERE id = ?", (call_id,))
         conn.execute("DELETE FROM call_customer_links WHERE call_id = ?", (call_id,))
-    removed = _cleanup_orphan_cases(conn)
     conn.close()
+    removed = delete_orphan_cases()
     return removed
 
 
@@ -547,8 +558,8 @@ def delete_calls_bulk(call_ids: list[int]) -> int:
     with conn:
         conn.execute(f"DELETE FROM calls WHERE id IN ({placeholders})", call_ids)
         conn.execute(f"DELETE FROM call_customer_links WHERE call_id IN ({placeholders})", call_ids)
-    removed = _cleanup_orphan_cases(conn)
     conn.close()
+    removed = delete_orphan_cases()
     return removed
 
 
@@ -668,7 +679,8 @@ def insert_customer(
                (first_name, last_name, phone, email, gender, date_of_birth,
                 address, subdistrict, district, city_province, country, postcode,
                 nick_name, channel, created_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"""
+            + (" ON CONFLICT (phone) DO UPDATE SET phone=EXCLUDED.phone" if phone and database_backend.database_url() else ""),
             (first_name, last_name, phone, email, gender, date_of_birth,
              address, subdistrict, district, city_province, country, postcode,
              nick_name, channel, now),
@@ -872,7 +884,8 @@ def insert_warranty(
                 model, size, sku, serial_no, label_no, warranty_period_months,
                 date_of_purchase, date_of_delivery, purchase_channel, order_number,
                 expiry_date, remark, ref_id, so_number, proof_path, status, created_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'active',?)""",
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'active',?)"""
+            + (" ON CONFLICT (registration_no) DO UPDATE SET registration_no=EXCLUDED.registration_no" if database_backend.database_url() else ""),
             (registration_no, customer_id, channel, certificate_no, category, brand,
              model, size, sku, serial_no, label_no, warranty_period_months,
              date_of_purchase, date_of_delivery, purchase_channel, order_number,
@@ -1077,7 +1090,7 @@ def link_call_customer(
     conn = get_connection()
     with conn:
         cur = conn.execute(
-            """INSERT OR REPLACE INTO call_customer_links
+            """INSERT INTO call_customer_links
                (call_id, customer_id, warranty_id, matched_by, created_at)
                VALUES (?,?,?,?,?)""",
             (call_id, customer_id, warranty_id, matched_by, now),
@@ -1115,6 +1128,8 @@ def save_sales_order(header: dict, lines: list[dict], actor: str | None = None) 
     now = _now()
     conn = get_connection()
     with conn:
+        if database_backend.database_url():
+            conn.execute("SELECT pg_advisory_xact_lock(hashtextextended(?, 0))", ("sales_order:" + values["so_number"],))
         row = conn.execute(
             "SELECT id FROM sales_orders WHERE so_number = ?", (values["so_number"],)
         ).fetchone()
@@ -1378,7 +1393,7 @@ def release_case(case_id: int, expected_username: str) -> bool:
             """UPDATE cases
                SET assignee_username = NULL, assignee_name = NULL, assigned_at = NULL,
                    updated_at = ?
-               WHERE id = ? AND assignee_username = ? COLLATE NOCASE""",
+               WHERE id = ? AND lower(assignee_username) = lower(?)""",
             (now, case_id, expected_username),
         )
     conn.close()
@@ -1399,7 +1414,7 @@ def set_case_status_as_assignee(case_id: int, status: str, username: str, name: 
         cur = conn.execute(
             """UPDATE cases
                SET status = ?, closed_by = ?, closed_at = ?, updated_at = ?
-               WHERE id = ? AND assignee_username = ? COLLATE NOCASE""",
+               WHERE id = ? AND lower(assignee_username) = lower(?)""",
             (status, closed_by, closed_at, now, case_id, username),
         )
     conn.close()
@@ -1463,9 +1478,10 @@ def get_cases_by_customer(customer_id: int) -> list[dict]:
 
 
 def get_open_cases_by_customer(customer_id: int) -> list[dict]:
+    aggregate = "string_agg(c.id::text, ',' ORDER BY c.id)" if database_backend.database_url() else "GROUP_CONCAT(c.id)"
     conn = get_connection()
     rows = conn.execute(
-        """SELECT cs.*, GROUP_CONCAT(c.id) as call_ids
+        f"""SELECT cs.*, {aggregate} as call_ids
            FROM cases cs
            LEFT JOIN calls c ON c.case_id = cs.id
            WHERE cs.customer_id = ? AND cs.status IN ('open', 'follow_up')
@@ -1533,7 +1549,7 @@ def _case_filters(
         )
         params.extend([like, like, like, like, like])
     if assignee:
-        where.append("cs.assignee_username = ? COLLATE NOCASE")
+        where.append("lower(cs.assignee_username) = lower(?)")
         params.append(assignee)
     if unassigned:
         where.append("cs.assignee_username IS NULL")
@@ -1567,7 +1583,7 @@ def get_all_cases(
         LEFT JOIN customers c ON c.id = cs.customer_id
         LEFT JOIN calls cl ON cl.case_id = cs.id
         {where_sql}
-        GROUP BY cs.id
+        GROUP BY cs.id, c.id
         ORDER BY cs.updated_at DESC
     """
     if limit is not None:
@@ -1784,7 +1800,7 @@ def create_user(
 def get_user_by_username(username: str) -> dict | None:
     conn = get_connection()
     row = conn.execute(
-        "SELECT * FROM users WHERE username = ? COLLATE NOCASE",
+        "SELECT * FROM users WHERE lower(username) = lower(?)",
         ((username or "").strip(),),
     ).fetchone()
     conn.close()
@@ -1801,7 +1817,7 @@ def get_user_by_id(user_id: int) -> dict | None:
 def get_all_users() -> list[dict]:
     conn = get_connection()
     rows = conn.execute(
-        "SELECT * FROM users ORDER BY is_active DESC, role, username COLLATE NOCASE"
+        "SELECT * FROM users ORDER BY is_active DESC, role, lower(username)"
     ).fetchall()
     conn.close()
     return [dict(r) for r in rows]
@@ -1852,6 +1868,7 @@ def update_user(
     params.extend([_now(), user_id])
     conn = get_connection()
     with conn:
+        _check_admin_removal(conn, user_id, role, is_active)
         conn.execute(f"UPDATE users SET {', '.join(fields)} WHERE id = ?", params)
     conn.close()
 
@@ -1878,7 +1895,23 @@ def touch_user_login(user_id: int) -> None:
 def delete_user(user_id: int) -> int:
     conn = get_connection()
     with conn:
+        _check_admin_removal(conn, user_id, None, False)
         cur = conn.execute("DELETE FROM users WHERE id = ?", (user_id,))
         deleted = cur.rowcount
     conn.close()
     return deleted
+
+
+def _check_admin_removal(conn, user_id, role, active):
+    if database_backend.database_url():
+        conn.execute("SELECT pg_advisory_xact_lock(724613003)")
+    elif not conn.in_transaction:
+        conn.execute("BEGIN IMMEDIATE")
+    row = conn.execute("SELECT role, is_active FROM users WHERE id=?", (user_id,)).fetchone()
+    if not row or row["role"] != "Admin" or not row["is_active"]:
+        return
+    if (role is None or role == "Admin") and (active is None or active):
+        return
+    others = conn.execute("SELECT COUNT(*) FROM users WHERE role='Admin' AND is_active=1 AND id<>?", (user_id,)).fetchone()[0]
+    if not others:
+        raise LastAdminError("At least one active Admin account must remain")

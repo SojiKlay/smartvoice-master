@@ -1,8 +1,10 @@
 """deploy/aws-ec2 — the single-EC2 pilot files keep their safety properties."""
 
 import re
+import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -108,3 +110,43 @@ def test_gitattributes_pins_lf_for_deploy_files():
     attributes = (DEPLOY.parent.parent / ".gitattributes").read_text(encoding="utf-8")
     assert "*.sh text eol=lf" in attributes
     assert "deploy/** text eol=lf" in attributes
+
+
+def test_update_preserves_ownership_of_excluded_runtime_files():
+    install = _code("install.sh")
+    assert not re.search(r'chown\s+-R\s+\S+\s+"\$APP"', install)
+    rsync = install[install.index("rsync -a --delete"):]
+    rsync = rsync[:rsync.index('"$SRC_DIR/" "$APP/"')]
+    assert "--chown=root:root" in rsync
+    assert "--exclude '/data/'" in rsync
+    assert "--exclude '/.env'" in rsync
+
+
+@pytest.mark.parametrize("setting, valid", [
+    (None, False),
+    ("", False),
+    ("   ", False),
+    ("admin1234", False),
+    ("short", False),
+    ("synthetic-bootstrap-password", True),
+])
+def test_installer_validates_existing_env_before_starting_services(tmp_path, setting, valid):
+    install = _text("install.sh")
+    match = re.search(r"<<'PY'\n(.*?)\nPY", install, re.S)
+    assert match is not None, "installer must validate the existing bootstrap configuration"
+    assert match.end() < install.index("systemctl enable --now smartvoice.service")
+    env_path = tmp_path / ".env"
+    contents = "TYPHOON_API_KEY=synthetic-secret\n"
+    if setting is not None:
+        contents += f"SMARTVOICE_BOOTSTRAP_PASSWORD='{setting}'\n"
+    env_path.write_text(contents, encoding="utf-8")
+    environment = dict(os.environ, PYTHON_DOTENV_DISABLED="1", PYTHONPATH=str(DEPLOY.parent.parent))
+    environment["SMARTVOICE_BOOTSTRAP_PASSWORD"] = "inherited-password-must-not-mask-file"
+    result = subprocess.run(
+        [sys.executable, "-", str(env_path)], input=match.group(1),
+        capture_output=True, text=True, cwd=tmp_path, env=environment,
+    )
+    assert (result.returncode == 0) is valid, result.stderr
+    assert env_path.read_text(encoding="utf-8") == contents
+    assert "synthetic-secret" not in result.stdout + result.stderr
+    assert "synthetic-bootstrap-password" not in result.stdout + result.stderr

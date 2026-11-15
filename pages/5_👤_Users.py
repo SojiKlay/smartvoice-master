@@ -168,12 +168,16 @@ with edit_col:
                     "is_active": bool(edit_active),
                 },
             )
-            db.update_user(
-                selected["id"],
-                display_name=edit_display,
-                role=normalize_role(edit_role),
-                is_active=edit_active,
-            )
+            try:
+                db.update_user(
+                    selected["id"],
+                    display_name=edit_display,
+                    role=normalize_role(edit_role),
+                    is_active=edit_active,
+                )
+            except db.LastAdminError:
+                st.error("ต้องเหลือบัญชี Admin ที่เปิดใช้งานอย่างน้อย 1 บัญชี")
+                st.stop()
             if changes:
                 audit(
                     audit_trail.UPDATE,

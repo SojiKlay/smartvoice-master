@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 import pytest
 
-from smartvoice import ollama_client
+from smartvoice import audit, ollama_client, pipeline
 
 # Stands in for something a customer said on the call.
 SPOKEN = "ลูกค้าชื่อสมชาย เบอร์ 0812345678"
@@ -73,3 +73,25 @@ def test_extract_json_error_has_no_excerpt():
 
     assert "0812345678" not in str(caught.value)
     assert "chars" in str(caught.value)
+
+
+def test_pipeline_failure_logs_no_exception_payload(app_log):
+    with patch.object(pipeline.db, "get_call_by_id", return_value={"status": "processing", "file_path": "synthetic.wav"}), \
+         patch.object(pipeline.db, "update_processing_step"), \
+         patch.object(pipeline.db, "update_call_status"), \
+         patch.object(pipeline, "_transcribe_diarized", side_effect=OSError(SPOKEN)):
+        with pytest.raises(OSError):
+            pipeline.process_call(999)
+    assert "0812345678" not in _logged(app_log)
+    assert "OSError" in _logged(app_log)
+
+
+def test_case_assignment_failure_logs_no_exception_payload(app_log):
+    with patch.object(pipeline.db, "get_call_customer_link", side_effect=ValueError(SPOKEN)):
+        pipeline._auto_assign_case(999, {})
+    assert "0812345678" not in _logged(app_log)
+
+
+def test_database_and_bootstrap_credentials_are_redacted():
+    values = audit.redact({"DATABASE_URL": "postgresql://user:secret@host/db", "SMARTVOICE_BOOTSTRAP_PASSWORD": "synthetic-secret"})
+    assert all(value == "***" for value in values.values())
