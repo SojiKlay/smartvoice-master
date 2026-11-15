@@ -77,6 +77,7 @@ _SECRET_FIELDS = {
     # Anyone holding the webhook URL can post into the team's channel.
     "discord_webhook_url",
     "typhoon_api_key", "pyannote_api_key",
+    "database_url", "smartvoice_bootstrap_password",
 }
 
 

@@ -7,7 +7,7 @@ AI-powered Call Center Analytics สำหรับสายภาษาไท�
 | Component | Technology |
 |-----------|------------|
 | UI | Streamlit แบบ multi-page (`st.navigation` + สิทธิ์ตาม role) |
-| Database | SQLite 3 |
+| Database | SQLite 3 หรือ PostgreSQL ผ่าน `DATABASE_URL` (ต้องรัน migration ก่อน; ดู `deploy/aws-ec2/README.md`) |
 | STT | Whisper Large v3 Turbo ผ่าน pyannoteAI API |
 | Speaker Diarization | pyannoteAI Precision-2/3 API |
 | LLM | Typhoon API |
@@ -193,7 +193,7 @@ Audio (.wav/.mp3)
   → speaker correction LLM + deterministic Thai role rules
   → Typhoon analysis 5 requests (JSON parsing, temperature 0)
   → insight_rules: verify quotes, compute scores/flags
-  → SQLite save
+  → SQLite / PostgreSQL save
   → auto case assignment
   → Streamlit UI
 ```

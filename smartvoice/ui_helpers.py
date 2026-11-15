@@ -252,7 +252,6 @@ def start_session(record) -> None:
     st.session_state["current_username"] = record.username
     st.session_state["current_user_id"] = record.user_id
     st.session_state["current_user_source"] = record.source
-    login_guard.reset(login_guard.account_key(record.username))
     audit_trail.record(
         audit_trail.LOGIN,
         audit_trail.ENTITY_SESSION,
@@ -305,15 +304,11 @@ def render_login_page():
             name = (username or "").strip()
             # A locked account stays locked even with the right password; the
             # lock is server-wide, so a new tab or browser does not reset it.
-            locked_for = _login_lock_remaining(name, client)
-            record = None if locked_for else authenticate(username, password)
+            record, locked_for = login_guard.authenticate_attempt(name, password, client, authenticate)
             if record:
                 start_session(record)
                 st.rerun()
             else:
-                if not locked_for:
-                    _register_login_failure(name, client)
-                locked_for = _login_lock_remaining(name, client)
                 # Failed attempts are the entries a security review asks for first.
                 audit_trail.record(
                     audit_trail.LOGIN_FAILED,

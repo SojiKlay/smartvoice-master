@@ -86,3 +86,27 @@ def test_main_prints_the_snapshot_path(live_db, tmp_path, capsys):
     assert backup_db.main(["--db", str(live_db), "--out", str(tmp_path / "b"), "--keep", "3"]) == 0
     printed = Path(capsys.readouterr().out.strip())
     assert printed.is_file()
+
+
+def test_prune_preserves_manual_backups(tmp_path):
+    names = ["smartvoice-000-manual.db", "smartvoice-20261101T000000Z.db", "smartvoice-20261102T000000Z.db"]
+    for name in names:
+        (tmp_path / name).write_bytes(b"synthetic")
+    backup_db.prune(tmp_path, 1)
+    assert (tmp_path / names[0]).is_file()
+
+
+def test_main_reads_db_path_from_env_file(live_db, tmp_path, monkeypatch, capsys):
+    env_file = tmp_path / "backup-test.env"
+    env_file.write_text(f"DB_PATH='{live_db.as_posix()}'\n", encoding="utf-8")
+    monkeypatch.delenv("DB_PATH")
+    assert backup_db.main(["--env-file", str(env_file), "--out", str(tmp_path / "backup")]) == 0
+    snapshot = Path(capsys.readouterr().out.strip())
+    with sqlite3.connect(snapshot) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM customers").fetchone()[0] == 1
+
+
+def test_invalid_postgres_configuration_never_prints_credentials(monkeypatch, tmp_path, capsys):
+    monkeypatch.setenv("DATABASE_URL", "postgresql://user:synthetic-secret@host/db?unknown_option=synthetic-secret")
+    assert backup_db.main(["--out", str(tmp_path)]) == 1
+    assert "synthetic-secret" not in capsys.readouterr().err

@@ -1334,9 +1334,9 @@ def _auto_assign_case(call_id: int, analysis: dict) -> None:
         subject = result.get("suggested_subject") or new_topic or "เรื่องทั่วไป"
         case_id = db.create_case(customer_id, subject)
         db.assign_call_to_case(call_id, case_id)
-    except Exception:
+    except Exception as exc:
         # Case assignment is non-critical — log but don't break the pipeline
-        log.exception("_auto_assign_case failed for call_id=%s", call_id)
+        log.error("_auto_assign_case failed for call_id=%s (%s)", call_id, type(exc).__name__)
 
 
 def process_call(call_id: int, step_callback=None) -> dict:
@@ -1556,7 +1556,7 @@ def process_call(call_id: int, step_callback=None) -> dict:
 
     except Exception as exc:
         error_msg = f"{type(exc).__name__}: {exc}\n{traceback.format_exc()}"
-        log.exception("process_call failed for call_id=%s", call_id)
+        log.error("process_call failed for call_id=%s (%s)", call_id, type(exc).__name__)
         db.update_call_status(call_id, "error", error_msg=error_msg)
         raise
 

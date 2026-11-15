@@ -1,5 +1,7 @@
 # SmartVoice — แผนย้าย Local สู่ Cloud และเอกสารส่งต่อ
 
+อัปเดต implementation 15 พฤศจิกายน 2026: branch `codex/aws-pilot-high-fixes` เพิ่ม PostgreSQL compatibility, schema version 1, SQLite read-only migration และ PostgreSQL backup/restore พร้อม tests บน PostgreSQL 17.12 localhost แล้ว ยังไม่ deploy หรือย้ายข้อมูลจริง ดู `PROJECT_STATUS.md` และ runbook ใน `deploy/aws-ec2/README.md` เนื้อหาด้านล่างเป็น design/handover เดิม บางรายการที่เขียนว่า Planned ได้ทำเฉพาะส่วน compatibility แล้ว; PostgreSQL hosting, distributed worker/storage และ production acceptance ยังไม่เสร็จ
+
 ตรวจ source วันที่ 15 พฤศจิกายน 2026 (Asia/Bangkok) ที่ commit `0c66644077e2d2e5fc930167a4116278d4eaa8d4` ซึ่งตรงกับ GitHub `master` และ remote HEAD ก่อนเริ่มงาน; working tree สะอาด งานส่งต่อนี้แก้เอกสารเท่านั้น
 
 ## 1. Executive summary

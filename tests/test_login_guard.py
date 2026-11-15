@@ -1,5 +1,8 @@
 """Tests for the server-wide failed-login throttle."""
 
+import threading
+from concurrent.futures import ThreadPoolExecutor
+
 import pytest
 
 from smartvoice import login_guard
@@ -90,3 +93,38 @@ def test_locked_entries_survive_pruning(monkeypatch):
         login_guard.register_failure(login_guard.account_key(f"spray{i}"), 5, 60, now=1001.0)
 
     assert login_guard.lock_remaining(victim, now=1002.0) > 0
+
+
+def test_concurrent_attempts_cannot_exceed_account_limit():
+    gate = threading.Barrier(32)
+    checked = []
+
+    def verify(username, password):
+        checked.append(username)
+        return None
+
+    def attempt(_):
+        gate.wait()
+        return login_guard.authenticate_attempt("target", "wrong", "192.0.2.1", verify)
+
+    with ThreadPoolExecutor(max_workers=32) as pool:
+        list(pool.map(attempt, range(32)))
+    assert len(checked) == login_guard.ACCOUNT_MAX_FAILURES
+
+
+def test_capacity_does_not_erase_recent_failures(monkeypatch):
+    monkeypatch.setattr(login_guard, "_MAX_TRACKED_KEYS", 3)
+    _fail("user:target", 4, now=1000)
+    _fail("user:a", 1, now=1000)
+    _fail("user:b", 1, now=1000)
+    _fail("user:c", 1, now=1001)
+    assert _fail("user:target", 1, now=1002)
+    assert login_guard.lock_remaining("user:target", now=1002) == 60
+    assert len(login_guard._entries) <= 3
+
+
+def test_full_capacity_denies_new_keys_until_expiry(monkeypatch):
+    monkeypatch.setattr(login_guard, "_MAX_TRACKED_KEYS", 1)
+    _fail("user:a", 1, now=1000)
+    assert login_guard.lock_remaining("user:b", now=1001) > 0
+    assert login_guard.lock_remaining("user:b", now=1400) == 0

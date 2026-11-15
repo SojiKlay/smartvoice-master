@@ -94,63 +94,67 @@ def main() -> int:
     args = parser.parse_args()
 
     conn = db.get_connection()
-    query = (
-        "SELECT id, filename, transcript FROM calls "
-        "WHERE status = 'done' AND topic = ? "
-        "  AND (topic_detail IS NULL OR topic_detail = '') "
-        "ORDER BY id"
-    )
-    params: tuple = (PRODUCT_ISSUE_TOPIC,)
-    if args.limit:
-        query += " LIMIT ?"
-        params = params + (args.limit,)
+    updates = []
+    try:
+        query = (
+            "SELECT id, filename, transcript FROM calls "
+            "WHERE status = 'done' AND topic = ? "
+            "  AND (topic_detail IS NULL OR topic_detail = '') "
+            "ORDER BY id"
+        )
+        params: tuple = (PRODUCT_ISSUE_TOPIC,)
+        if args.limit:
+            query += " LIMIT ?"
+            params = params + (args.limit,)
 
-    rows = conn.execute(query, params).fetchall()
-    total = len(rows)
-    if total == 0:
-        print("No calls to backfill — every product-issue call already has topic_detail.")
-        conn.close()
-        return 0
+        rows = conn.execute(query, params).fetchall()
+        total = len(rows)
+        if total == 0:
+            print("No calls to backfill — every product-issue call already has topic_detail.")
+            return 0
 
-    print(f"Found {total} call(s) to classify"
-          f"{' (dry-run, no DB write)' if not args.apply else ''}\n")
+        print(f"Found {total} call(s) to classify"
+              f"{' (dry-run, no DB write)' if not args.apply else ''}\n")
 
-    bucket: dict[str, int] = {}
-    skipped = 0
-    for idx, row in enumerate(rows, 1):
-        transcript = row["transcript"] or ""
-        if not transcript.strip():
-            print(f"[{idx}/{total}] id={row['id']} {row['filename']}: skipped (empty transcript)")
-            skipped += 1
-            continue
+        bucket: dict[str, int] = {}
+        skipped = 0
+        for idx, row in enumerate(rows, 1):
+            transcript = row["transcript"] or ""
+            if not transcript.strip():
+                print(f"[{idx}/{total}] id={row['id']} {row['filename']}: skipped (empty transcript)")
+                skipped += 1
+                continue
 
-        detail = _classify(transcript)
-        bucket[detail] = bucket.get(detail, 0) + 1
-        print(f"[{idx}/{total}] id={row['id']} {row['filename']} → {detail}")
+            detail = _classify(transcript)
+            bucket[detail] = bucket.get(detail, 0) + 1
+            print(f"[{idx}/{total}] id={row['id']} {row['filename']} → {detail}")
+
+            if args.apply:
+                updates.append((
+                    "UPDATE calls SET topic_detail = ?, updated_at = ? WHERE id = ?",
+                    (detail, db._now(), row["id"]),
+                ))
 
         if args.apply:
-            conn.execute(
-                "UPDATE calls SET topic_detail = ?, updated_at = ? WHERE id = ?",
-                (detail, db._now(), row["id"]),
-            )
+            with conn:
+                for query, parameters in updates:
+                    conn.execute(query, parameters)
 
-    if args.apply:
-        conn.commit()
+        print("\n── Summary ──")
+        for label in TOPIC_DETAIL_CHOICES:
+            n = bucket.get(label, 0)
+            if n:
+                print(f"  {label:25s} {n}")
+        if skipped:
+            print(f"  (skipped, empty transcript): {skipped}")
+        print()
+        if args.apply:
+            print(f"Updated {sum(bucket.values())} row(s).")
+        else:
+            print(f"Dry-run only. Re-run with --apply to persist.")
 
-    print("\n── Summary ──")
-    for label in TOPIC_DETAIL_CHOICES:
-        n = bucket.get(label, 0)
-        if n:
-            print(f"  {label:25s} {n}")
-    if skipped:
-        print(f"  (skipped, empty transcript): {skipped}")
-    print()
-    if args.apply:
-        print(f"Updated {sum(bucket.values())} row(s).")
-    else:
-        print(f"Dry-run only. Re-run with --apply to persist.")
-
-    conn.close()
+    finally:
+        conn.close()
     return 0
 
 

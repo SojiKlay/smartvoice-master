@@ -267,7 +267,7 @@ def is_auth_configured() -> bool:
 
 def bootstrap_password_is_custom() -> bool:
     """True when the operator set SMARTVOICE_BOOTSTRAP_PASSWORD (valid or not)."""
-    return bool(os.getenv(BOOTSTRAP_PASSWORD_ENV, "").strip())
+    return BOOTSTRAP_PASSWORD_ENV in os.environ
 
 
 def bootstrap_password_error() -> str | None:

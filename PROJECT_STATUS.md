@@ -1,5 +1,29 @@
 # SmartVoice — สถานะสำหรับพัฒนาต่อ
 
+## T2 fixes และ PostgreSQL compatibility — 15 พฤศจิกายน 2026
+
+งานใน branch `codex/aws-pilot-high-fixes` แยกจาก GitHub master `3e549ed` ผู้ใช้อนุมัติ commit/push เพื่อส่งต่อแล้ว โดยยังไม่อนุมัติ merge/deploy และไม่แก้ `.env` หรือ runtime data เดิม ผู้ใช้รายงานว่าเวอร์ชันก่อนเปิดเว็บ/login บน EC2 และทดลอง API ได้แล้ว; งานนี้ไม่ได้เข้าตรวจ EC2 หรือเรียก API จริง ผล push และ commit SHA ให้ตรวจจาก GitHub branch โดยตรง
+
+- ปิดปัญหา ownership เมื่ออัปเดต, bootstrap password ว่าง/ขาดบน server, login race/capacity, DB_PATH ของ backup, traceback ที่เผย payload และการ rotate manual backup
+- รองรับ SQLite เดิมและ PostgreSQL ผ่าน `DATABASE_URL`; schema version 1 อยู่ใน `migrations/001_postgresql.sql` ต้องรัน migration แยกก่อนเว็บเริ่ม ไม่สร้าง schema อัตโนมัติระหว่าง web rerun
+- `scripts/migrate_postgres.py`: dry-run เป็นค่าเริ่มต้น, SQLite read-only, ตรวจ integrity/FKs, นำเข้า 9 ตารางและเทียบ row digests ภายใน transaction, รักษา IDs/ตั้ง sequences, ปฏิเสธปลายทางที่มีข้อมูล
+- PostgreSQL คง TEXT สำหรับ JSON/วันที่และ double precision สำหรับตัวเลข พร้อม case-insensitive usernames, atomic case claim, concurrent customer/warranty inserts และการ serialize SO เลขเดียวกัน; ป้องกันลบ/ปิด/ลดสิทธิ์ Admin คนสุดท้ายใน transaction
+- Backup รองรับ PostgreSQL custom dump และ SQLite; ซ้อม restore PostgreSQL ลงฐานใหม่แล้ว ไฟล์เสียง/หลักฐาน/checkpoint และ processing threads ยังอยู่ในเครื่องเดียว ไม่ใช่ distributed architecture
+- ผลจริง: full suite **626 passed in 103.81s** บน Python 3.12.14 รวม PostgreSQL 17.12 จริงบน localhost, driver psycopg 3.3.9, mock AI APIs และ shell syntax tests; blocked external network attempts = 0
+- รัน business-rule tests เดิมจาก test_db/auth/case_workflow/sales_orders/audit บน PostgreSQL เพิ่ม: **197 passed, 6 deselected in 83.09s** รายการที่แยกออกตรวจ schema/PRAGMA/migration ของ SQLite โดยเฉพาะและผ่านแล้วใน full suite ไม่ได้ลบหรือลด assertions ของ tests เดิม
+- ยังต้องยืนยันบน EC2: Ubuntu/systemd/Caddy, ownership หลังอัปเดตจริง, TLS/SG/IAM, pg_dump version ให้ตรง server, disk space, backup timer และ restore บน target ก่อนรับมอบ ดู runbook PostgreSQL ใน `deploy/aws-ec2/README.md` ไม่ถือว่าการทดสอบ Windows นี้รับรอง production
+
+ข้อความสถานะก่อนหน้านี้ด้านล่างเป็นประวัติ ณ เวลานั้น ให้ใช้ส่วนนี้สำหรับสถานะ implementation ล่าสุด
+
+### ส่งต่อให้ ChatGPT web / ผู้พัฒนาถัดไป
+
+1. เลือก branch `codex/aws-pilot-high-fixes` และตรวจ commit ล่าสุดก่อนทำงาน อย่าเริ่มจาก master เก่าหรือใช้เพียงข้อความสรุปเป็นหลักฐานว่า merge แล้ว
+2. อ่าน AGENTS.md, สถานะส่วนนี้ และ runbook PostgreSQL ใน `deploy/aws-ec2/README.md` รีวิว diff เทียบ master ก่อนเสนอ merge
+3. PostgreSQL บน EC2/RDS ยังไม่ได้เตรียม ผู้ใช้ยืนยันว่า deployment เดิมยังใช้ SQLite ต้องตกลง hosting และตรวจว่ามีข้อมูลเดิมที่ต้องเก็บหรือไม่ก่อนสร้างฐาน/ย้ายข้อมูล
+4. ทดสอบ schema, migration, backup/restore และ permissions บน Ubuntu/สภาพแวดล้อมเป้าหมายด้วยข้อมูลสังเคราะห์ก่อน ผล PostgreSQL ในเครื่องนี้เป็น localhost Windows 17.12 ไม่ใช่หลักฐานว่า EC2/RDS ผ่านแล้ว
+5. Full suite ใช้ mock AI APIs, ปิด dotenv และตั้ง DB_PATH/TEMP ไปฐานทดสอบ หากต้องการ PostgreSQL integration tests ให้ตั้ง SMARTVOICE_TEST_POSTGRES_URL ไปฐานชื่อ smartvoice_test บน localhost เท่านั้น (fixture ล้างข้อมูลในฐานทดสอบนี้) และมี pg_dump/pg_restore ใน PATH
+6. ห้ามแนบ secrets/ข้อมูลลูกค้า ห้ามเรียก AI API จริง สร้าง AWS resources, deploy, merge หรือย้ายข้อมูลจริงโดยไม่ได้รับอนุมัติเพิ่ม การอนุมัติรอบนี้ครอบคลุม commit/push branch สำหรับส่งต่อเท่านั้น
+
 ## Stage 1: เตรียมขึ้น AWS EC2 ให้บริษัททดลองใช้ — 15 พฤศจิกายน 2026 (branch `feat/aws-pilot-stage1`)
 
 เป้าหมาย: ทั้งระบบอยู่บน AWS (ไม่รันบนเครื่องพนักงาน) ให้ตัวแทนบริษัทเข้าทดลองผ่าน HTTPS — แบบ EC2 เครื่องเดียว ยังคง SQLite + ไฟล์บน EBS; PostgreSQL / S3 storage / worker ยังเป็นแผนขั้นถัดไป
