@@ -131,7 +131,11 @@ cd /opt/smartvoice/app && sudo -u smartvoice /opt/smartvoice/venv/bin/python scr
 
 ## 8. อัปเดตเวอร์ชัน
 
-นำโค้ดใหม่ขึ้นเครื่อง (ข้อ 2) แล้วรัน `install.sh` คำสั่งเดิมซ้ำ — `data/` และ `.env` ไม่ถูกแตะ จากนั้น service รีสตาร์ทเอง การรีสตาร์ทจะหยุดงานประมวลผลที่กำลังทำอยู่ (สายนั้นกลับเป็นรอประมวลผล) ให้อัปเดตตอนไม่มีงานค้าง
+นำโค้ดใหม่ขึ้นเครื่อง (ข้อ 2) ในโฟลเดอร์แยกจาก `/opt/smartvoice/app` แล้วรัน `install.sh` คำสั่งเดิมซ้ำ โดยหยุดรับงานและรอ processing จบก่อน สคริปต์ล็อกไม่ให้ติดตั้งซ้อน ตรวจ prerequisites/config เดิม เตรียมโค้ดและ venv ใหม่ใน `/opt/smartvoice/releases/release-XXXXXXXX` และตรวจ PostgreSQL/Caddy ก่อนเปลี่ยนรุ่น `data/` และ `.env` เดิมไม่ถูกคัดลอกหรือเขียนทับ
+
+ก่อนเปลี่ยนโค้ดจริงจะหยุด app และ backup ทั้ง service/timer เก็บสำเนาโค้ดและ config เดิมใน `previous/` ของ release ใหม่ แล้วสลับ `/opt/smartvoice/venv` ไป venv ที่เตรียมไว้ ตรวจ HTTP health ก่อนเปิด backup timer หากล้มเหลวหลังเริ่มเปลี่ยนรุ่น จะพยายามคืนโค้ด/venv/config เดิมและคงบริการหยุดไว้ หากคืนไม่สำเร็จจะแจ้ง `Rollback incomplete` พร้อมที่เก็บสำเนา ไม่ย้อนฐานข้อมูลหรือ `.env` อัตโนมัติ
+
+หากข้อความระบุว่าคืนรุ่นเดิมสำเร็จ ให้ตรวจ config/ฐานข้อมูลว่าตรงกับรุ่นเดิมก่อน แล้วจึง `sudo systemctl restart caddy smartvoice` และ `sudo systemctl start smartvoice-backup.timer` หาก process ถูก kill หรือเครื่องดับระหว่างติดตั้งจน trap ทำงานไม่ได้ ให้คงบริการหยุด สำรองสถานะปัจจุบัน แล้วให้ผู้ดูแลคืนโค้ดจาก `previous/app` โดย exclude `data/`, `.env`, `.env.*` คืน venv จาก `previous/venv` และ config จาก `previous/config` ก่อนเริ่มบริการ ห้ามลบ release directories ที่ venv ปัจจุบันหรือสำเนารุ่นก่อนยังอ้างถึง ตรวจพื้นที่ว่างและจัดการรุ่นเก่าหลังยืนยันการกู้คืนแล้วเท่านั้น การคืนรุ่นไม่ย้อน apt packages ที่ติดตั้งระหว่างเตรียมเครื่อง
 
 การคัดลอกกำหนดเจ้าของไฟล์โค้ดเป็น root ผ่าน `rsync` โดยไม่เปลี่ยนเจ้าของไฟล์หรือโฟลเดอร์ย่อยใน `data/` เดิม หากเคยอัปเดตด้วยสคริปต์รุ่นที่เปลี่ยนเจ้าของข้อมูลเป็น root แล้ว ต้องตรวจและแก้ ownership ของ runtime data แยกต่างหากก่อนเปิดบริการ
 
@@ -167,8 +171,8 @@ sudo -u postgres createdb --owner=smartvoice --encoding=UTF8 --template=template
 
 1. ซ้อมด้วยข้อมูลสังเคราะห์ก่อน บันทึกเวอร์ชันโค้ด/config และ path ข้อมูล หยุดรับ uploads รอ processing จบ แล้วหยุด `smartvoice`, `smartvoice-backup.timer`, `smartvoice-backup.service`
 2. สำรอง SQLite ด้วย `scripts/backup_db.py --db <ฐานเดิม> --out <โฟลเดอร์สำรองแยก>` พร้อมสำรองไฟล์ `data/`/checkpoints และเก็บ `.env` อย่างปลอดภัยแยกจากรายงาน ตรวจ backup อ่านได้จริงก่อนเปลี่ยน URL
-3. อัปเดตโค้ดและ venv ด้วย installer รุ่นนี้ เมื่อตั้ง `DATABASE_URL` แล้วแต่ schema ยังไม่พร้อม installer จะหยุดก่อนเริ่ม service ให้ดำเนิน migration แล้วรัน installer ซ้ำ ห้ามข้ามการตรวจ
-4. เลือกนำเข้า SQLite snapshot ไป PostgreSQL **ว่างเท่านั้น** หรือเริ่มฐานใหม่ว่าง รันคำสั่งใน `/opt/smartvoice/app` ด้วยผู้ใช้ smartvoice ที่อ่าน `.env` ได้:
+3. เตรียมโค้ดและ venv ด้วย installer รุ่นนี้ เมื่อตั้ง `DATABASE_URL` แล้วแต่ schema ยังไม่พร้อม installer จะหยุดก่อนสลับรุ่น โดยแสดง `Prepared release` ให้ดำเนิน migration จาก `<prepared-release>/app` ด้วย `<prepared-release>/venv/bin/python` แล้วรัน installer ซ้ำ ห้ามข้ามการตรวจ โฟลเดอร์นี้มี symlink ไป `.env` เดิมโดยไม่คัดลอก secrets
+4. เลือกนำเข้า SQLite snapshot ไป PostgreSQL **ว่างเท่านั้น** หรือเริ่มฐานใหม่ว่าง รันคำสั่งใน `<prepared-release>/app` ด้วยผู้ใช้ smartvoice ที่อ่าน `.env` ได้ และแทน interpreter ด้านล่างด้วย `<prepared-release>/venv/bin/python` หากยังไม่ได้สลับรุ่น:
 
 ```bash
 /opt/smartvoice/venv/bin/python -m scripts.migrate_postgres --sqlite <sqlite-snapshot.db>

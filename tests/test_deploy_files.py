@@ -122,6 +122,82 @@ def test_update_preserves_ownership_of_excluded_runtime_files():
     assert "--exclude '/.env'" in rsync
 
 
+def test_release_is_prepared_before_services_stop_and_live_copy():
+    install = _code("install.sh")
+    assert install.index("flock -n 9") < install.index("apt-get update")
+    assert install.index("caddy validate --config") < install.index("activate_release\n")
+    assert install.index("database_backend.check_schema()") < install.index("activate_release\n")
+    assert 'python3 -m venv "$VENV"' in install
+    assert 'PREVIOUS="$RELEASE/previous"' in install
+    assert 'trap finish_install EXIT' in install
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="bash not available")
+@pytest.mark.parametrize("failure", ["none", "prepare", "copy", "start", "health"])
+def test_release_activation_and_rollback(tmp_path, failure):
+    source = _text("install.sh")
+    functions = source[source.index("stop_services() {"):source.index('echo "==> packages"')]
+    script = r'''
+set -euo pipefail
+BASE="$PWD/live"
+APP="$BASE/app"
+RELEASE="$PWD/release"
+PREVIOUS="$RELEASE/previous"
+CANDIDATE="$RELEASE/app"
+VENV="$RELEASE/venv"
+CONFIG_ROOT="$PWD/config"
+mkdir -p "$APP/data" "$BASE/venv" "$CANDIDATE" "$VENV" "$PREVIOUS/app" "$CONFIG_ROOT/caddy" "$PREVIOUS/config/caddy"
+printf old > "$APP/version"
+printf old > "$BASE/venv/version"
+printf secret > "$APP/.env"
+printf customer > "$APP/data/record"
+printf new > "$CANDIDATE/version"
+printf new > "$VENV/version"
+cp "$APP/version" "$PREVIOUS/app/version"
+printf old > "$CONFIG_ROOT/caddy/Caddyfile"
+cp "$CONFIG_ROOT/caddy/Caddyfile" "$PREVIOUS/config/caddy/Caddyfile"
+ACTIVATING=0
+VENV_SAVED=0
+systemctl() {
+    printf '%s\n' "$*" >> "$PWD/events"
+    if [[ "$1" == stop ]]; then touch "$PWD/stopped"; fi
+    if [[ "$1" == start && "$FAILURE" == start ]]; then return 1; fi
+}
+rsync() {
+    [[ -f "$PWD/stopped" ]] || return 81
+    local args=("$@")
+    local src="${args[${#args[@]}-2]}" dst="${args[${#args[@]}-1]}"
+    cp "$src/version" "$dst/version"
+    if [[ "$src" == "$CANDIDATE/" && "$FAILURE" == copy ]]; then return 82; fi
+}
+'''
+    if os.name == "nt":
+        script += r'''
+ln() {
+    "$TEST_PYTHON" -c 'import subprocess, sys; sys.exit(subprocess.call(["cmd", "/c", "mklink", "/J", sys.argv[2], sys.argv[1]], stdout=subprocess.DEVNULL))' "$(cygpath -w "$2")" "$(cygpath -w "$3")"
+}
+'''
+    script += functions[:functions.index('trap finish_install EXIT')] + r'''
+trap finish_install EXIT
+[[ "$FAILURE" != prepare ]] || exit 83
+activate_release
+printf new > "$CONFIG_ROOT/caddy/Caddyfile"
+[[ "$FAILURE" != health ]] || exit 84
+ACTIVATING=0
+'''
+    result = subprocess.run(["bash", "-c", script], cwd=tmp_path,
+                            env=dict(os.environ, FAILURE=failure, TEST_PYTHON=sys.executable.replace("\\", "/")), capture_output=True, text=True)
+    assert (result.returncode == 0) == (failure == "none"), result.stderr
+    assert (tmp_path / "live/app/.env").read_text() == "secret"
+    assert (tmp_path / "live/app/data/record").read_text() == "customer"
+    expected = "new" if failure == "none" else "old"
+    assert (tmp_path / "live/app/version").read_text() == expected
+    assert (tmp_path / "live/venv/version").read_text() == expected
+    assert (tmp_path / "config/caddy/Caddyfile").read_text() == expected
+    if failure == "prepare":
+        assert not (tmp_path / "events").exists()
+
+
 @pytest.mark.parametrize("setting, valid", [
     (None, False),
     ("", False),
