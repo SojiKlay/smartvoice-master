@@ -1,5 +1,16 @@
 # SmartVoice — สถานะสำหรับพัฒนาต่อ
 
+## ตรวจรับช่วงงาน (ผู้พัฒนาใหม่) — 15 พฤศจิกายน 2026
+
+ตรวจ branch `docs/cloud-migration-handover` ที่ `5ffd599` จาก clone ใหม่ อ่านเอกสารและ source แล้วรัน tests ซ้ำ ไม่ได้แก้ application code, `.env` หรือข้อมูล ไม่เรียก API จริง ไม่เข้า AWS
+
+- ยืนยันจาก source: API-only (ไม่มี import ของ torch/whisper/transformers/pyannote/ollama), SQLite เป็นฐานข้อมูลเดียว, ไม่มีโค้ด PostgreSQL/object storage/worker, ไฟล์อยู่ใน `data/`, ประมวลผลด้วย daemon threads ในโปรเซสเว็บ — ตรงกับ handover ด้านล่าง
+- ไฟล์กฎธุรกิจ (`db.py`, `prompts.py`, `insight_rules.py`, `auth.py`, `sales_orders.py`, `case_workflow.py`, `customer_entry.py`) ไม่เปลี่ยนตั้งแต่ `df0ef44` จนถึง `0c66644`
+- **Tests รันซ้ำ: 541 passed in 26.04s** ทั้ง `tests/` รวม `test_config.py` บน Python 3.12.10 ใน `.venv` ใหม่ (`pip install -r requirements.txt pytest`, `pip check` ผ่าน) ด้วย environment เดียวกับคำสั่งด้านล่าง ทั้งหมดใช้ API จำลอง จึงไม่ใช่หลักฐานของ live API/PostgreSQL/Cloud
+- แก้เอกสารที่ล้าสมัยให้ตรงกับโค้ด API-only: `CLAUDE.md`, `AGENTS.md` (คำสั่งทดสอบ, baseline 541, tech stack, ผังไฟล์ `stt/`, พฤติกรรมเมื่อ Typhoon ล้มเหลว, หน้า Settings, ตัวแปร env) และหมายเหตุในไฟล์นี้ที่ข้อความเดิมไม่ตรงกับโค้ดแล้ว
+- ข้อสังเกตที่เพิ่มใน pitfalls ของ `CLAUDE.md`/`AGENTS.md`: การล็อกหลังใส่รหัสผิดอยู่ใน `st.session_state` (ไม่ใช่ฝั่ง server), บัญชี bootstrap `admin`/`admin1234` ถูกสร้างเมื่อฐานว่าง, คำตอบ LLM/traceback ที่อาจมีคำพูดลูกค้าเข้า log และ `calls.error_msg` — ต้องจัดการก่อนเปิดระบบสู่อินเทอร์เน็ต
+- ยังไม่ commit/push การแก้เอกสารนี้
+
 ## Cloud migration handover — 15 พฤศจิกายน 2026
 
 **Current phase: Phase 4 — PostgreSQL Migration Design (Planned / Not Implemented).** อ่าน [แผนส่งต่อฉบับเต็ม](docs/cloud_migration_plan.md) และ [architecture ปัจจุบัน](docs/architecture.md) ก่อนพัฒนาต่อ หมายเลข Phase เป็นหมวดงาน ไม่ใช่หลักฐานว่า Phase 1–3 เสร็จทั้งหมด
@@ -143,7 +154,7 @@ Pipeline เดิม:
 | `smartvoice/ui_helpers.py` | แสดงชื่อโมเดลตาม provider ใน sidebar |
 | `pages/1_📤_Admin.py` | ใช้ readiness ตาม provider ก่อนประมวลผล |
 | `pages/4_Settings.py` | เลือก provider/รุ่นและใส่ key ผ่านช่องรหัสผ่าน; เก็บ key เดิมเมื่อเว้นว่าง; รอบนี้แก้ไม่เตือน GPU/ตรวจ combo local เมื่อใช้ speech API และแก้คำแนะนำเปิดแอปใหม่ |
-| `.env.example` | ตัวอย่างตัวแปร API ไม่มี key จริง; ค่าเริ่มต้นยังคง local/Ollama |
+| `.env.example` | ตัวอย่างตัวแปร API ไม่มี key จริง; ค่าเริ่มต้นยังคง local/Ollama (ณ 14 พ.ย. — ตั้งแต่ `0c66644` ค่าเริ่มต้นเป็น `pyannote_api`/`typhoon` แล้ว) |
 | `requirements-api.txt` | dependencies สำหรับ API โดยไม่ติดตั้ง torch/CUDA/transformers/Ollama; pin Streamlit 1.55.0 |
 | `SETUP.md` | วิธีติดตั้ง API, ค่า config, ข้อจำกัด และวิธีกู้คืนงานจาก checkpoint |
 | `tests/test_api_backends.py` | ทดสอบ provider/payload/errors/cache/resume/cancellation/redaction/Settings รวม regression คำเตือน GPU |
@@ -178,7 +189,7 @@ Checkpoint `<audio-path>.smartvoice-api.json` เก็บ job ID และผ�
 - รอบสุดท้ายหลังแก้ Settings และกำหนด TEMP/TMP ภายในโปรเจ็กต์: **552 passed in 90.26s** ไม่มี tests ล้มเหลวในชุดที่รัน
 - `python -m pip check`: **No broken requirements found**
 - Tests ครอบคลุม API จำลอง, Settings ผ่าน Streamlit AppTest, pipeline และ business rules เดิม, DB/auth/audit และหน้าใช้งานตามชุดเดิม
-- เว้น `tests/test_config.py` ตาม AGENTS เพราะมีผลข้างเคียงกับ environment และต้องใช้ torch ซึ่งไม่ได้ติดตั้งในชุด API
+- เว้น `tests/test_config.py` ตาม AGENTS เพราะมีผลข้างเคียงกับ environment และต้องใช้ torch ซึ่งไม่ได้ติดตั้งในชุด API (ณ 14 พ.ย. — ปัจจุบันไฟล์นี้ไม่ต้องใช้ torch และรันรวมในชุด 541 แล้ว)
 - ไม่ได้ทดสอบ inference local/GPU, API keys จริง, คุณภาพเสียงจริง, provider rate limits จริง, cloud/network deployment หรือโหลดหลายผู้ใช้
 
 คำสั่งทดสอบที่ผ่านบนเครื่องนี้ (PowerShell ที่ root โปรเจ็กต์):
@@ -205,6 +216,8 @@ py -3.11 -m venv .venv
 ```
 
 ข้ามคำสั่งสร้าง venv ถ้ามีแล้ว เครื่องนี้ทดสอบด้วย Python 3.12.14; โหมด local ใช้ Python 3.10/3.11 ตามคู่มือเดิม โหมด API ให้ใช้คำสั่งเปิด Streamlit ด้านบน เพราะ `run.bat`/`run.sh` และ dependencies หลักยังเป็นชุด local เต็ม
+
+> หมายเหตุ (ตรวจ 15 พ.ย. 2026): ข้อความย่อหน้าบนเป็นสถานะ 14 พ.ย. ตั้งแต่ `0c66644` `requirements.txt` ชี้ไป `requirements-api.txt` และ `run.bat`/`run.sh` ติดตั้งชุด API แล้ว ใช้ launcher ได้ตามปกติ; `preflight.py` รับ Python 3.10–3.12 เท่านั้น
 
 เปิด `http://localhost:8501` ตั้ง provider/key ใน Settings แล้วบันทึกและเปิดแอปใหม่ หากยังไม่มีบัญชี แอปมีบัญชี bootstrap ตาม `SETUP.md`/`auth.py` ให้เปลี่ยนรหัสผ่านก่อนเปิดให้ผู้อื่นใช้งาน ไม่เก็บรหัสผ่านจริงในเอกสารนี้
 
