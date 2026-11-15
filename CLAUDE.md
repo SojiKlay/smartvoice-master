@@ -8,17 +8,23 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **SmartVoice** — AI-powered Call Center Analytics สำหรับ call center ภาษาไทย (domain: ร้านที่นอน/เฟอร์นิเจอร์ Restonic/โลตัส)
 
-Pipeline: `audio (.wav/.mp3) → Whisper STT → Pyannote diarization → LLM speaker correction → LLM analysis → SQLite → Streamlit UI`
+Pipeline: `audio (.wav/.mp3) → pyannoteAI API (Whisper Turbo STT + Precision diarization) → LLM speaker correction (Typhoon API) → LLM analysis (Typhoon API) → insight_rules → SQLite → Streamlit UI`
+
+Web, SQLite, audio files, checkpoints and background threads still run on the machine that hosts the app. PostgreSQL, object storage, distributed workers and cloud deployment are **planned, not implemented** — see `docs/cloud_migration_plan.md` and `PROJECT_STATUS.md`.
 
 ## Commands
 
-All commands run from inside `smartvoice/` using the venv Python interpreter on Windows:
+All commands run from the repository root using the venv Python interpreter on Windows (Python 3.10–3.12; `preflight.py` flags anything else):
 
 ```powershell
-# Run all tests (ignore test_config.py — has env side-effects)
-& ".venv\Scripts\python.exe" -m pytest tests\ --ignore=tests\test_config.py -q
+# Run all tests with mocked APIs — process-only env, no .env read, no real keys, no network calls
+$env:STT_PROVIDER='pyannote_api'; $env:LLM_PROVIDER='typhoon'; $env:PYTHON_DOTENV_DISABLED='1'
+$env:TYPHOON_API_KEY='test-only'; $env:PYANNOTE_API_KEY='test-only'
+$env:DB_PATH=Join-Path $PWD '.pytest_cache/runtime/test.db'
+$env:TEMP=Join-Path $PWD '.pytest_cache/temp'; $env:TMP=$env:TEMP
+& ".venv\Scripts\python.exe" -m pytest tests\ -q --basetemp=.pytest_cache/work
 
-# Run a single test file
+# Run a single test file (same env as above)
 & ".venv\Scripts\python.exe" -m pytest tests\test_pipeline.py -v
 
 # Run the app
@@ -31,22 +37,15 @@ streamlit run Home.py       # → http://localhost:8501
 # Backfill topic_detail for legacy "แจ้งปัญหาสินค้า" calls (dry-run by default)
 & ".venv\Scripts\python.exe" scripts\backfill_topic_detail.py [--apply]
 
-# Compare Ollama models on the 4 analyses over stored transcripts (DB opened read-only)
+# Compare Typhoon API models on the 4 analyses over stored transcripts (DB opened read-only)
+# Sends real transcripts to the PAID API — refuses to run without --allow-api; needs approval for the data
 # → data\llm_compare\<timestamp>\report.md (gitignored: it quotes real calls)
-& ".venv\Scripts\python.exe" scripts\compare_llm_models.py --models <current> <candidate> [--limit N]
-
-# Compare Whisper models on stored call audio (production transcribe_hf, DB read-only, no diarization/LLM)
-# → data\stt_compare\<timestamp>\report.md; --refs DIR of <call_id>.txt adds CER; --no-prompt MODEL skips prompt_ids
-& ".venv\Scripts\python.exe" scripts\compare_stt_models.py --models <current> <candidate> [--calls ID ...]
+& ".venv\Scripts\python.exe" scripts\compare_llm_models.py --models <current> <candidate> [--limit N] --allow-api
 ```
 
-**Current test baseline:** 533 tests, must pass 100% before every commit.
+**Current test baseline:** 541 tests (all of `tests/`, including `test_config.py`), must pass 100% before every commit. Verified 15 Nov 2026: 541 passed on Python 3.12 with the env above. These are mocked-API tests — they are not evidence that the live APIs, PostgreSQL or a cloud deployment work.
 
-**External dependency:** Ollama must be running before processing calls:
-```powershell
-ollama pull scb10x/llama3.1-typhoon2-8b-instruct
-ollama serve
-```
+**External dependency:** `PYANNOTE_API_KEY` and `TYPHOON_API_KEY` must be set (Settings page or `.env`) before processing calls. Readiness checks only test that a key is present, not that it is valid or has credit. Every processed call sends audio to pyannoteAI and transcript text to Typhoon, and costs money — use only audio that is approved for external processing. `scripts\compare_stt_models.py` and local Whisper/Pyannote/Ollama were removed; do not bring them back.
 
 ## Architecture
 
@@ -58,9 +57,10 @@ ollama serve
 | `db.py` | SQLite schema, migrations, CRUD (tables: `calls`, `customers`, `warranty_registrations`, `call_customer_links`, `cases`, `users`, `sales_orders`, `sales_order_lines`). Scale-friendly helpers: `count_calls_by_status()`, `get_pending_call_ids()`, `get_processing_calls()`, `get_all_calls(limit=N)`. Also holds the append-only `audit_log` table. Customer/warranty edits go through `update_customer()` / `update_warranty()` (column whitelists); deletes are `soft_delete_*()` / `restore_*()` — see **Soft delete + audit trail** |
 | `pipeline.py` | Core orchestrator — speaker correction multi-pass, case assignment (~70 KB) |
 | `prompts.py` | All LLM prompt templates (~54 KB) |
-| `ollama_client.py` | LLM client + JSON extraction; 4 separate analysis calls. Includes `normalize_topic_detail()` for the product-issue drill-down vocabulary |
+| `ollama_client.py` | LLM client — the name is kept for imports, but `chat()` calls the **Typhoon API only** (`https://api.opentyphoon.ai/v1/chat/completions`). JSON extraction; 5 analysis requests. Includes `normalize_topic_detail()` for the product-issue drill-down vocabulary |
+| `preflight.py` | Readiness checks: Python version, demo mode, bootstrap password, key present for pyannoteAI / Typhoon (presence only — no API call) |
 | `file_manager.py` | Audio upload + SHA-256 deduplication. Filename helpers: `extract_phone_from_filename()`, `extract_direction_from_filename()` (Inbound/Outbound), `extract_agent_code_from_filename()` |
-| `env_settings.py` | `.env` read/write + UI helpers: `gpu_available()`, `gpu_device_name()`, `validate_whisper_combo()` (model/backend/device/compute compatibility), `recommended_combo_for_model()` (auto-apply on model change) |
+| `env_settings.py` | `.env` read/write (`read_env()`, `write_env()` — also updates `os.environ` of this process only), `env_bool()`, `mask_secret()`. The GPU / Whisper-combo helpers were removed with local inference |
 | `ui_helpers.py` | Shared CSS, login page, `init_page(page_key)` role guard, badges, processing launchers |
 | `customer_entry.py` | Validation + create/update/hide/restore rules for the manual data-entry page (phone normalisation, duplicate guards that skip the row being edited, warranty expiry maths); writes its own audit entries through `audit.record()` — no Streamlit import, so it is unit-testable. Also `set_warranty_status()` (Active/Cancel) |
 | `sales_orders.py` | Sales orders (SO): `FIELDS` (Thai template header + NAV English aliases per column), `read_upload()` (xlsx/csv, finds the header row, cp874 fallback), `parse_import()` (one row per line → orders grouped by SO number, row-numbered errors), value parsers (พ.ศ. dates, `1,234.50`, Excel-stripped leading 0), `complete_totals()`, `import_orders()` (upsert + one `import` audit entry), `save_manual()` / `hide()` / `restore()` / `link_customer()`, `template_bytes()`. No Streamlit import — see **Sales orders (SO)** |
@@ -74,7 +74,7 @@ ollama serve
 | `labels.py` | Thai words for every code shown on screen (`call_status()`, `case_status()`, `sentiment()`, `field()` for audit-log field names) and `thai_time()` — UTC ISO → `dd/mm/yyyy HH:MM น.` in UTC+7. No Streamlit import |
 | `discord_notify.py` | Discord incoming-webhook sender (`DISCORD_WEBHOOK_URL`); background thread, never raises, `allowed_mentions` off, phone masked to last 4 digits |
 | `auth.py` | PBKDF2 hashing, DB/`.env` account lookup, role → page permission matrix (`ROLE_PERMISSIONS`, `can_access()`, `visible_pages()`) |
-| `stt/` | STT sub-package: `audio.py` → `transcribe.py` → `diarize.py` → `orchestrator.py` |
+| `stt/` | STT sub-package: `orchestrator.py` (pyannoteAI upload → job → poll → segments, checkpoint `<audio>.smartvoice-api.json`, `MOCK_STT` transcripts), `audio.py` (`has_thai()` text helper only), `diarize.py` (speaker-label / word-grouping helpers, no model). `transcribe.py` was removed |
 
 `Home.py` is the router (see **Login & role-based navigation**), not just a landing page.
 
@@ -110,14 +110,14 @@ Pyannote frequently mislabels speakers; LLM also makes mistakes — the system u
 
 ### LLM analysis (`ollama_client.py`) — the model proposes, `insight_rules.py` decides
 
-5 Ollama requests per call, all `format: "json"`, temperature 0, `num_ctx` = `OLLAMA_NUM_CTX` (default 12288 — Ollama's own default on a 16 GB GPU is 4096, which silently cut the start of the QA prompt):
+5 Typhoon API requests per call (plus speaker correction, cleanup and case matching), temperature 0, `max_tokens` = `TYPHOON_MAX_TOKENS` (default 4096). The service's JSON mode is **not** used — the `json_mode` argument of `chat()` is ignored and the app parses JSON itself. (The old Ollama `num_ctx` / `format: "json"` settings no longer exist.)
 1. `extract_summary_and_topics()` — summary, topic, **topic_detail**, keywords, brand/platform mentions
 2. `analyze_sentiment()` — customer_quote → reason → sentiment (quote first grounds the label)
 3. `evaluate_agent_qa()` — QA checklist: `"found": [{"item": "P1", "quote": ...}]` + `customer_had_problem`
 3b. same function, **separate request** for the next action (`prompts.NEXT_ACTION_USER`) — asked together with the checklist, the model returned `pending: false` on calls that plainly had open work
 4. `detect_anomaly()` — category + evidence_quote + reason
 
-Every request → `extract_json()` → empty dict on failure (logs and continues). The transcript is capped at `MAX_CHARS` (14,000) by dropping the **middle** — the old cut kept only the first 6,000 characters and lost the close of 4 in 11 real calls.
+**A failed request fails the call — no silent defaults.** Missing key, connection error/timeout, any non-2xx status (incl. 429), a truncated completion (`finish_reason == "length"`), an empty answer, or JSON that cannot be parsed raises `ollama_client.APIError`; `process_call()` then marks the call `error` (`pipeline.py`). There is no automatic retry/backoff, because every retry is a paid request. The `except Exception → return the input / empty dict` branches in the analysis functions only run for a non-Typhoon provider, which `config.api_settings()` no longer allows. The transcript is capped at `MAX_CHARS` (14,000) by dropping the **middle** — the old cut kept only the first 6,000 characters and lost the close of 4 in 11 real calls.
 
 **Never trust the model's totals, flags or lists — `insight_rules.py` recomputes them** (all validated on the 11 real calls, see `tests/test_insight_rules.py`):
 - QA: an item counts only if its quote is something the agent said (`agent_said()`: not in a `Customer:` line, or in agent voice — diarization leaves agent words as "Speaker 0" or merged into customer lines). P2 (polite particles) is measured, not quoted. Score = share of applicable items (P3 only applies when the customer had a problem), 1-5. The old prompt scored every call 5/5.
@@ -129,7 +129,7 @@ Every request → `extract_json()` → empty dict on failure (logs and continues
 
 `topic_detail` vocabulary (filled only when `topic == "แจ้งปัญหาสินค้า"`): `ผ้าขาด/ผ้าหุ้มชำรุด`, `เตียง/โครงหัก`, `สปริง/ฟองน้ำยุบ`, `เปื้อน/รอยขีดข่วน`, `กลิ่น/แพ้/ระคายเคือง`, `ความชื้น/น้ำท่วม`, `ขนาด/สเปคผิด`, `อื่นๆ`. Clamped via `normalize_topic_detail()` (stems are whole words — a bare "รา" matched "รายละเอียด").
 
-**Prompt changes are validated by re-running the 4 analyses on the stored transcripts** and comparing against the previous prompts — a script like that is cheaper than a full STT run and caught every regression above.
+**Prompt changes are validated by re-running the 4 analyses on the stored transcripts** and comparing against the previous prompts — a script like that is cheaper than a full STT run and caught every regression above. The findings in this section were measured with the old local Typhoon 8B (Ollama); they have **not** been re-checked against the API model (`typhoon-v2.5-30b-a3b-instruct`). Re-running them now sends real transcripts to the paid API (`compare_llm_models.py --allow-api`) and needs approval.
 
 ### Auto case assignment (`pipeline.py:_auto_assign_case`)
 
@@ -139,13 +139,16 @@ Every request → `extract_json()` → empty dict on failure (logs and continues
 
 ### STT modes
 
-| `MOCK_STT` | `WHISPER_BACKEND` | Result |
-|-----------|-------------------|--------|
-| `true` | any | Mock transcripts (fast, no GPU) |
-| `false` | `transformers` | Recommended for Thai accuracy (`biodatlab/distill-whisper-th-large-v3`) |
-| `false` | `faster-whisper` | Speed-optimized, `large-v3` or native CT2 model |
+| `MOCK_STT` | Speech | LLM |
+|-----------|--------|-----|
+| `true` | Built-in sample transcripts (`orchestrator.MOCK_DIARIZED`), no API | **Still calls the Typhoon API** (key required, costs money) — there is no fully offline mode |
+| `false` | pyannoteAI API: `PYANNOTE_API_MODEL` `precision-2` (default) or `precision-3`, with transcription `STT_API_MODEL=faster-whisper-large-v3-turbo` (the only value accepted) | Typhoon API |
 
-HF_TOKEN required for `pyannote/speaker-diarization-3.1` access. Without it, diarization is skipped and all speech is attributed to "Speaker 0".
+`config.api_settings()` raises if `STT_PROVIDER` / `LLM_PROVIDER` is set to the old `local` / `ollama`; the Settings page tells the admin to save API mode instead of changing `.env` silently.
+
+pyannoteAI checkpoint (`<audio-path>.smartvoice-api.json`, written atomically): signature = hash of audio + model + key. Same signature with an output → reused, no new paid job; with a job id → that job is polled again; stuck at `submitting` (sent, no job id) → the call stops and someone must check pyannoteAI's job history before deleting the checkpoint. Changing the key or model starts a new paid job. Stopping in the app does **not** cancel a job the provider already accepted. The checkpoint holds the raw transcript — treat it like the audio (never commit, never log). The job is sent without a language setting; whether Thai needs one has not been checked against a live call.
+
+The API speech model is **not** the old Thai-tuned `biodatlab/distill-whisper-th-large-v3` and not Pyannote Community-1. Thai accuracy, latency and cost through the API are **unverified** — no live call has been processed yet.
 
 ## Domain: Thai Speaker Cues
 
@@ -182,7 +185,7 @@ Normal complaints resolved politely = negative sentiment, **not** anomaly.
 
 These pages avoid loading rows they don't display, so they stay responsive at 10K+ uploads:
 
-- **Home** (`Home.py`): the four cards come from `count_calls_by_status()`. Counting with `get_all_calls()` (a `SELECT *`) pulled every transcript into memory — measured ~278 ms and ~57 MB per page view at 5,000 calls. The readiness checks are wrapped in `@st.cache_data(ttl=300)` because an expander body runs even while collapsed and those checks hit Ollama/HuggingFace over the network (~2.6 s); together this took a home render from 2.9 s to 0.2 s at 5,000 calls.
+- **Home** (`Home.py`): the four cards come from `count_calls_by_status()`. Counting with `get_all_calls()` (a `SELECT *`) pulled every transcript into memory — measured ~278 ms and ~57 MB per page view at 5,000 calls. The readiness checks are wrapped in `@st.cache_data(ttl=300)` because an expander body runs even while collapsed and those checks used to hit Ollama/HuggingFace over the network (~2.6 s); together this took a home render from 2.9 s to 0.2 s at 5,000 calls. (The API-only checks no longer make network calls, but keep the cache: any check added later may.)
 - **Admin** (`pages/1_📤_Admin.py`): top metric cards read from `count_calls_by_status()` (SQL `GROUP BY`) so they're accurate even when only the latest-N rows are loaded for display. Load-limit picker defaults to `200 ล่าสุด` when total > 200, else `ทั้งหมด`. "Process All Pending" uses `get_pending_call_ids()` (lazy) so old pending calls aren't missed. The `@st.fragment(run_every=3)` live panel (`_live_run_panel`) reads only the current run's rows via `db.get_calls_progress()` (no transcripts) plus `get_processing_calls()`, and reruns the whole page only when another call finishes.
 - **Dashboard** (all pages via `dashboard_common.load_filtered_calls()`): load-limit picker defaults to `1,000 ล่าสุด` when total > 1000, else `ทั้งหมด`. Analytics signal quality matters more here than first-paint speed, so the default is larger than on Admin.
 
@@ -279,7 +282,9 @@ Rules that keep the trail trustworthy:
   a log pointing at rows that no longer exist explains nothing.
 - `audit.record()` **never raises** — a failed log must not lose the user's action.
 - Secrets are dropped by `audit.redact()` (`password`, `password_hash`,
-  `hf_token`, ...); the field name stays so the change is still visible.
+  `typhoon_api_key`, `pyannote_api_key`, `discord_webhook_url`, `hf_token`, ...);
+  the field name stays so the change is still visible. Redaction goes by field
+  name only — it is not a filter for personal data in free text.
 - `update` entries carry `{field: [before, after]}` from `audit.diff_fields()`,
   and an edit that changes nothing writes no entry at all.
 - Adding a new mutating action means adding an `audit()` call next to it —
@@ -315,9 +320,9 @@ ship sample rows that look real; the Excel template has headers only).
 ## Stopping processing + live results (Admin page)
 
 - Processing runs in daemon threads in the Streamlit process; `processing_control` is plain module state, so a stop pressed in one browser stops the run for everyone.
-- Stopping is cooperative — checkpoints are every `pipeline._step()`, every STT progress message (the transformers backend logs once per 15 s chunk), and every `ollama_client.chat()` request. Worst-case delay is one chunk / one LLM request / one Pyannote run.
+- Stopping is cooperative — checkpoints are every `pipeline._step()`, every pyannoteAI request and every second of job polling (`stt/orchestrator.py`), and before/after every `ollama_client.chat()` request. Worst-case delay is one HTTP request (up to `AI_API_TIMEOUT`, default 120 s). The remote pyannoteAI job keeps running; its result is picked up from the checkpoint next time.
 - A stopped call goes back to `uploaded` with **no** `error_msg` (`db.reset_calls_to_uploaded()`) — the Admin page shows any `error_msg` as a failure. The queue puts back the calls it marked `processing` up front but never started.
-- Saving results + case assignment run inside `processing_control.uninterruptible()`: case matching asks Ollama, and a stop there would leave a `done` call with no case.
+- Saving results + case assignment run inside `processing_control.uninterruptible()`: case matching asks the Typhoon API, and a stop there would leave a `done` call with no case.
 - The live panel lists the run's calls as they finish and lets staff open each finished call's summary/transcript right away (a selectbox, not a dialog — the 3 s fragment rerun would close a dialog). It also offers "คืนสถานะไฟล์ที่ค้าง" when calls are `processing` but nothing runs in this server (app was closed mid-call), instead of waiting `PROCESSING_STALE_MINUTES`.
 
 ## Case ownership (claim / no stealing / Discord)
@@ -341,24 +346,30 @@ ship sample rows that look real; the Excel template has headers only).
 
 ## Settings page behavior
 
-`pages/4_Settings.py` is intentionally NOT wrapped in `st.form` because Streamlit form widgets don't fire `on_change` callbacks until form submit. The page uses reactive widgets (each with `key=`) + a single `st.button("Save Settings")` to commit all values together.
+`pages/4_Settings.py` uses reactive widgets (each with `key=`) + a single `st.button("บันทึกการตั้งค่า")` that writes everything to `.env` together (not an `st.form`).
 
 Key behaviors:
-- **GPU detection** at page load via `gpu_available()` — hides `cuda` from Device dropdown when no GPU is present, so users can't save a combo that will crash later
-- **Auto-apply recommended combo on model change** — the Whisper model selectbox's `on_change=_apply_model_recommendations` callback writes `recommended_combo_for_model()` output to session_state for Backend/Device/Compute. User can still adjust afterwards.
-- **Post-save validation** — `validate_whisper_combo()` runs after save and renders `error` / `warning` / `info` messages so users see actionable feedback before the next `process_call()` would otherwise crash.
+- **Quick presets** — "โหมดสาธิต" (`MOCK_STT=true`) / "โหมดใช้งานจริง"; both are audited.
+- **API settings** — pyannoteAI model (`precision-2` / `precision-3`; `STT_API_MODEL` is fixed to `faster-whisper-large-v3-turbo`), Typhoon model (free text, default `typhoon-v2.5-30b-a3b-instruct`; `typhoon-v2.1-12b-instruct` is offered as a smaller option subject to account access).
+- **Keys** — password fields; leaving one blank keeps the saved key, a checkbox clears it. The page only says whether a key is set, never shows it.
+- **Discord webhook** + test button.
+- **Readiness** — cached 5 min, re-check button; checks key presence only.
+- A key change takes effect after the app is restarted.
 
-`_MODEL_RECOMMENDED_COMBO` table in `env_settings.py` maps each known model to its preferred `(backend, device, compute)`. Adding a new model to the Settings dropdown should also add an entry here (otherwise it falls through with no auto-apply).
+The old GPU detection, Whisper backend/device/compute selectors, `validate_whisper_combo()` and `_MODEL_RECOMMENDED_COMBO` were removed with local inference.
+
+**Cloud note:** saving writes the server's `.env` file and that process's `os.environ`. With more than one app instance this cannot work — production config/secrets belong in a secrets service (planned, see `docs/cloud_migration_plan.md` §9).
 
 ## Known Pitfalls
 
-- **`test_config.py`** manipulates env vars with side-effects on other tests — always pass `--ignore=tests\test_config.py`.
+- **`test_config.py`** used to manipulate env vars and need torch, so older docs say `--ignore=tests\test_config.py`. It now holds only pure text/grouping tests and runs with the full suite.
+- **Local-model history.** The pitfalls below that mention Ollama, local Typhoon 8B / Gemma, Typhoon Whisper or `prompt_ids` were measured with the removed local stack. They explain why prompts and `insight_rules` look the way they do, but they are not re-verified on the API models.
 - **`created_at` in DB** = upload/process time, not the actual call date. Call date is in the filename: `YYYYMMDDHHMMSS-...`.
 - **Typhoon 8B copies whatever the prompt shows**: example actions ("ติดตามการโอนเงินคืน"), placeholder text (`<เบอร์ที่ลูกค้าให้ไว้>`), brand lists, *and pre-filled JSON answer templates* (a skeleton with `"done": false` / `"pending": false` came back unchanged). Describe the keys in words instead of showing a filled skeleton, give no concrete example values, and verify in `insight_rules`. Keep `sanitize_next_action()` in the display path for older DB rows.
 - **One request, one job.** Bundling the next action into the QA request made the model drop it; it is its own request now.
 - **`scb10x/typhoon2.1-gemma3-12b` won't load on Ollama 0.32.5** ("selectattr: unknown test 'tool_calls'"): the GGUF's Jinja chat template hits a llama.cpp parser bug, and a Modelfile `TEMPLATE` doesn't override it. The local workaround is a copy of the GGUF with that validation loop blanked out (same byte length), imported as `typhoon2.1-gemma3-12b-local`. In the 13-call comparison it wrote better summaries/topics, but answered `sentiment_reason` in English on 9/13 calls and wrote bare-verb todos ("รอ", "ประสาน"); telling every analysis prompt to write Thai and asking for "คำกริยา + ทำอะไร/กับใคร" fixed both (0/13 English) without changing the 8B's answers. It also raised a false high-severity B2 (agent misinformation) on an ordinary item-name mix-up, which led to the B-category check in `misconduct_is_grounded()`. It still takes ~2× as long as the 8B — not switched yet.
-- **Testing Ollama with Thai from Git Bash `curl` sends mangled text** and the model answers nonsense; test through Python (`ollama_client.chat`).
-- **Typhoon Whisper on our calls (5 real calls, 30 min of audio, no hand-checked references yet):** `typhoon-ai/typhoon-whisper-large-v3` loops on one syllable ("ต้า ต้า ต้า …") when given our `prompt_ids` — it only works with the prompt off, and then loses "โลตัส" ("โลตาร์") and runs ~4× slower (22.6 s per audio minute, 5.2 GB) than the current model (5.9 s, 2.3 GB). `typhoon-whisper-turbo` keeps the prompt and the speed, reads places/dates a little better, but writes almost no spaces (1.1 per 100 chars vs 4.7), so `_SENTENCE_END_RE` — which needs a space after the particle — finds about half the boundaries. Both write numbers as Thai words ("แปดห้าห้า"), never digits. Through the full pipeline (diarization + speaker correction + analyses, on DB copies) Turbo was no worse: same total time, finer turns, and better topic/summary on 3 of 5 calls (e.g. the right `แจ้งปัญหาสินค้า / สปริง` where the current model gave `สอบถามข้อมูลสินค้า`) — the missing spaces did not visibly hurt speaker splitting. Not switched yet (5 calls is a small sample); switching means `.env`, the Settings dropdown and `_MODEL_RECOMMENDED_COMBO`.
+- **Testing an LLM with Thai from Git Bash `curl` sends mangled text** (seen with Ollama) and the model answers nonsense; test through Python (`ollama_client.chat`) — and remember that a Typhoon test request is a paid call.
+- **Typhoon Whisper on our calls (5 real calls, 30 min of audio, no hand-checked references yet):** `typhoon-ai/typhoon-whisper-large-v3` loops on one syllable ("ต้า ต้า ต้า …") when given our `prompt_ids` — it only works with the prompt off, and then loses "โลตัส" ("โลตาร์") and runs ~4× slower (22.6 s per audio minute, 5.2 GB) than the current model (5.9 s, 2.3 GB). `typhoon-whisper-turbo` keeps the prompt and the speed, reads places/dates a little better, but writes almost no spaces (1.1 per 100 chars vs 4.7), so `_SENTENCE_END_RE` — which needs a space after the particle — finds about half the boundaries. Both write numbers as Thai words ("แปดห้าห้า"), never digits. Through the full pipeline (diarization + speaker correction + analyses, on DB copies) Turbo was no worse: same total time, finer turns, and better topic/summary on 3 of 5 calls (e.g. the right `แจ้งปัญหาสินค้า / สปริง` where the current model gave `สอบถามข้อมูลสินค้า`) — the missing spaces did not visibly hurt speaker splitting. Not switched (5 calls is a small sample) — and moot now that STT goes through the pyannoteAI API, which uses Whisper Large v3 Turbo with no `prompt_ids`. The note about missing spaces breaking `_SENTENCE_END_RE` may apply to the API output too; check it on the first live calls.
 - **The speaker-correction model can write text, not just labels.** When it splits a segment into `parts` it writes each part's text itself; on call 295 it filled one with lines of its own prompt ("สวัสดีครับ/ค่ะ [ชื่อบริษัท] ขอบคุณที่ติดต่อ... เรียกอีกฝ่ายว่า "คุณลูกค้า"") in place of what was said, and the analyses misread the call. `correct_speakers()` now applies a split only when `insight_rules.split_keeps_text()` finds the parts are the segment's own words in order (≤10% added, ≥80% kept, spaces/punctuation ignored); otherwise the segment stays whole and the deterministic splitters handle it. On 10 real calls the model proposed 10 splits and none was usable (prompt text, "...", lines copied from elsewhere in the call) — the guard rejected all 10. The leak doesn't happen on every run: the model's answer differs between runs.
 - **Common Whisper errors:** "โอมาสนา"/"โนโลตัส"/"ฟิวทู" for brand names; "ที่โน่น"/"ทีเนี่ย" for "ที่นอน"; Thai phone numbers often mixed Thai/Arabic digits.
 - **fpdf2 hangs on Thai with `WrapMode.CHAR`** — `multi_cell` never returns on a long Thai run with no spaces at full width. The report wraps lines itself (`dashboard_report.wrap_text()`, never splitting a consonant from its vowel/tone marks) and draws each line with `cell()`. Text copied out of the PDF comes out reordered (side effect of HarfBuzz shaping); the printed text is correct.
@@ -369,26 +380,33 @@ Key behaviors:
 - **An `st.expander` body runs even while collapsed.** Anything slow inside it (network checks, big queries) runs on every rerun — cache it.
 - **Same widget key on two pages ≠ same widget.** Streamlit leaves the old value in session state but the new page's widget ignores it and resets to its first option. Persist cross-page values in a plain key and write them back every run (see `dashboard_common.restore_filters`).
 - **Network calls on a page must be cached** (`@st.cache_data`) — the Settings readiness checks used to hit Ollama/HuggingFace (~2.6 s) on every click.
+- **LLM output and tracebacks reach the logs.** `correct_speakers()` logs up to 400 characters of the model's answer, and `process_call()` stores the full traceback in `calls.error_msg` — both can contain customer speech. Keep that in mind before shipping logs to a central/cloud log service.
+- **The login lockout lives in `st.session_state`** (`ui_helpers._register_login_failure`), so a new browser session starts with a clean count. It is not server-side brute-force protection; add one before the app is reachable from the internet.
+- **The bootstrap `admin` / `admin1234` account is created whenever no account exists** (`auth.ensure_default_admin`). A fresh database on a public host exposes it until someone changes the password.
 - **UI labels are words, not emoji.** Menu entries use Material icons (`:material/...:`) next to the words, set explicitly so Streamlit doesn't pick up the emoji in some page file names. `tests/test_home_entrypoint.py` fails if a decorative icon comes back. The page *file names* (`pages/1_📤_Admin.py`) still contain emoji and `Home.py` routes to those exact paths — don't strip them.
 
 ## Pre-commit Checklist
 
-- `pytest tests\ --ignore=tests\test_config.py -q` → 100% pass
+- Full suite with the mocked-API env from **Commands** → 100% pass (`tests\`, including `test_config.py`)
 - Add a regression test for every bug fix
 - Remove temp files `_*.py`, `_*.txt`
 - DB schema changes → migration must not break existing data + update `docs/database_design.md`
-- Prompt changes → end-to-end test with at least one real audio file
+- Prompt changes → end-to-end test with at least one real audio file — this now goes through the paid APIs, so it needs approval for the audio and the cost
+- Stage files by name and check the staged diff: no `.env`, keys, `data/`, audio, checkpoints, DB files or customer text
 
 ## Environment
 
-Configure via `smartvoice/.env` (copy from `.env.example`). Key variables:
-- `WHISPER_MODEL`, `WHISPER_BACKEND`, `WHISPER_DEVICE`, `WHISPER_COMPUTE`
-- `HF_TOKEN` — required for pyannote diarization (request access at huggingface.co)
-- `OLLAMA_MODEL`, `OLLAMA_BASE_URL`
-- `MOCK_STT=true` — fast development mode without GPU
+Configure via `.env` in the repository root (copy from `.env.example`). Key variables (all read in `config.py`):
+- `STT_PROVIDER=pyannote_api`, `LLM_PROVIDER=typhoon` — the only accepted values
+- `PYANNOTE_API_KEY`, `PYANNOTE_API_MODEL` (`precision-2` default / `precision-3`), `STT_API_MODEL` (`faster-whisper-large-v3-turbo`, fixed)
+- `TYPHOON_API_KEY`, `TYPHOON_MODEL` (default `typhoon-v2.5-30b-a3b-instruct`), `TYPHOON_MAX_TOKENS` (default 4096)
+- `AI_API_TIMEOUT` (per request, default 120 s), `AI_JOB_TIMEOUT` (pyannoteAI job wait, default 1800 s)
+- `MOCK_STT=true` — sample transcripts instead of speech API; the LLM still calls Typhoon
 - `DB_PATH` — defaults to `data/smartvoice.db`
+- `PROCESSING_STALE_MINUTES` — calls stuck in `processing` longer than this are reset when the app opens (default 180)
+- `SMARTVOICE_USERS` — break-glass accounts not in the DB (see `scripts/make_password_hash.py`)
 - `CASE_RECENCY_HOURS` — window for recency-based case attachment
 - `DISCORD_WEBHOOK_URL` — case claim/close notifications (blank = off)
 - `REPORT_FONT_PATH` — Thai `.ttf` for the PDF report (blank = Tahoma / Leelawadee / Noto Sans Thai / TLWG, first found; none → the PDF button is disabled)
 
-`data/` and `.env` are gitignored (runtime data + secrets).
+`data/` and `.env` are gitignored (runtime data + secrets). The old `WHISPER_*`, `HF_TOKEN` and `OLLAMA_*` variables are no longer read; leftover values in an existing `.env` are harmless and must not be deleted automatically.

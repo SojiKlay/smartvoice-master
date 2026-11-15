@@ -1,5 +1,53 @@
 # SmartVoice — สถานะสำหรับพัฒนาต่อ
 
+## ตรวจรับช่วงงาน (ผู้พัฒนาใหม่) — 15 พฤศจิกายน 2026
+
+ตรวจ branch `docs/cloud-migration-handover` ที่ `5ffd599` จาก clone ใหม่ อ่านเอกสารและ source แล้วรัน tests ซ้ำ ไม่ได้แก้ application code, `.env` หรือข้อมูล ไม่เรียก API จริง ไม่เข้า AWS
+
+- ยืนยันจาก source: API-only (ไม่มี import ของ torch/whisper/transformers/pyannote/ollama), SQLite เป็นฐานข้อมูลเดียว, ไม่มีโค้ด PostgreSQL/object storage/worker, ไฟล์อยู่ใน `data/`, ประมวลผลด้วย daemon threads ในโปรเซสเว็บ — ตรงกับ handover ด้านล่าง
+- ไฟล์กฎธุรกิจ (`db.py`, `prompts.py`, `insight_rules.py`, `auth.py`, `sales_orders.py`, `case_workflow.py`, `customer_entry.py`) ไม่เปลี่ยนตั้งแต่ `df0ef44` จนถึง `0c66644`
+- **Tests รันซ้ำ: 541 passed in 26.04s** ทั้ง `tests/` รวม `test_config.py` บน Python 3.12.10 ใน `.venv` ใหม่ (`pip install -r requirements.txt pytest`, `pip check` ผ่าน) ด้วย environment เดียวกับคำสั่งด้านล่าง ทั้งหมดใช้ API จำลอง จึงไม่ใช่หลักฐานของ live API/PostgreSQL/Cloud
+- แก้เอกสารที่ล้าสมัยให้ตรงกับโค้ด API-only: `CLAUDE.md`, `AGENTS.md` (คำสั่งทดสอบ, baseline 541, tech stack, ผังไฟล์ `stt/`, พฤติกรรมเมื่อ Typhoon ล้มเหลว, หน้า Settings, ตัวแปร env) และหมายเหตุในไฟล์นี้ที่ข้อความเดิมไม่ตรงกับโค้ดแล้ว
+- ข้อสังเกตที่เพิ่มใน pitfalls ของ `CLAUDE.md`/`AGENTS.md`: การล็อกหลังใส่รหัสผิดอยู่ใน `st.session_state` (ไม่ใช่ฝั่ง server), บัญชี bootstrap `admin`/`admin1234` ถูกสร้างเมื่อฐานว่าง, คำตอบ LLM/traceback ที่อาจมีคำพูดลูกค้าเข้า log และ `calls.error_msg` — ต้องจัดการก่อนเปิดระบบสู่อินเทอร์เน็ต
+- ยังไม่ commit/push การแก้เอกสารนี้
+
+## Cloud migration handover — 15 พฤศจิกายน 2026
+
+**Current phase: Phase 4 — PostgreSQL Migration Design (Planned / Not Implemented).** อ่าน [แผนส่งต่อฉบับเต็ม](docs/cloud_migration_plan.md) และ [architecture ปัจจุบัน](docs/architecture.md) ก่อนพัฒนาต่อ หมายเลข Phase เป็นหมวดงาน ไม่ใช่หลักฐานว่า Phase 1–3 เสร็จทั้งหมด
+
+- ก่อนเริ่มเอกสาร: working tree สะอาด, branch `master`, local HEAD และ GitHub HEAD/master ตรงกันที่ `0c66644077e2d2e5fc930167a4116278d4eaa8d4`; ตรวจ remote ด้วย `git ls-remote origin HEAD refs/heads/master` สำเร็จ
+- API-only migration อยู่ใน source แล้ว: pyannoteAI + Typhoon; SQLite 9 application tables, local runtime storage และ process-local background threads ยังอยู่ ไม่ได้เพิ่ม PostgreSQL หรือแก้ application code ในงานส่งต่อ
+- ตรวจ source ยืนยัน SQLite coupling, customer/warranty check-then-insert, SO transaction รายใบ, case claim แบบ conditional atomic UPDATE, username NOCASE และ last-admin check ที่แยกจาก write; `call_customer_links` ไม่มี UNIQUE(call_id) แม้ใช้ INSERT OR REPLACE จึงต้องตกลงความหมายก่อนแปลงเป็น upsert
+- PM แจ้งว่าเคยทดลอง AWS Academy EC2; รอบนี้ไม่ได้เข้าตรวจ AWS และยังไม่ยืนยัน deployment ของ API-only รุ่นล่าสุดหรือ Production Architecture ไม่มีการสร้าง/แก้ AWS resources
+- Live API end-to-end, PostgreSQL integration/concurrency, cloud storage/workers และ multi-user cloud acceptance ยังไม่ได้ยืนยัน; 541 passed ในรายงานเดิมเป็น automated tests ที่ mock APIs
+- เอกสารเปลี่ยนเฉพาะ `PROJECT_STATUS.md`, `docs/architecture.md`, `docs/cloud_migration_plan.md` บน branch `docs/cloud-migration-handover`; ผล commit/push ให้ดูรายงานส่งมอบ ไม่ถือว่า branch นี้ merge แล้ว
+
+### Verification ของงานเอกสารนี้
+
+อ่าน AGENTS/README/SETUP/CHANGELOG/architecture/database design และตรวจ source/tests ที่เกี่ยวข้อง เทียบ Git history เพื่อแยกการเปลี่ยน API จากกฎธุรกิจ ตรวจ `.gitignore` ว่าครอบคลุม secrets/runtime/backup และต้องตรวจ staged diff ก่อน commit ไม่อ่านหรือแนบฐานข้อมูล/เสียงลูกค้าจริง
+
+ผล full suite รอบส่งต่อ: **541 passed in 89.25s** รวม `test_config.py` ใช้ API mocks และ environment เฉพาะ process โดยปิด dotenv และตั้ง DB_PATH/TEMP/TMP ไปยัง `.pytest_cache` ไม่เปลี่ยน `.env` ไม่มี live API หรือ Cloud test ในรอบนี้
+
+คำสั่งที่รันจริง (PowerShell ที่ repository root):
+
+```powershell
+$env:STT_PROVIDER='pyannote_api'
+$env:LLM_PROVIDER='typhoon'
+$env:PYTHON_DOTENV_DISABLED='1'
+$env:TYPHOON_API_KEY='test-only'
+$env:PYANNOTE_API_KEY='test-only'
+$env:DB_PATH=Join-Path $PWD '.pytest_cache/handover-runtime/test.db'
+$env:TEMP=Join-Path $PWD '.pytest_cache/temp'
+$env:TMP=$env:TEMP
+& '.venv/Scripts/python.exe' -m pytest tests/ -q --basetemp=.pytest_cache/handover-verification
+```
+
+### งานถัดไปสำหรับ Claude Code / PM
+
+อ่าน AGENTS.md และ cloud_migration_plan.md ก่อน ตรวจ Git status/latest commit แล้วเริ่ม **Phase 4 implementation preparation** ด้วยการยืนยัน DAL/driver/schema, link cardinality, SO concurrency, last-admin locking, audit guarantee และ authentication fallback เขียน contract/concurrency tests ก่อน implementation ไม่ทำ API-only migration ซ้ำ ไม่เปลี่ยนกฎธุรกิจ/สิทธิ์/soft-delete/audit เงียบ ๆ และไม่ deploy หรือย้ายข้อมูลลูกค้าจริงโดยไม่มี approval
+
+ข้อความ API-only ด้านล่างเป็นรายงานรอบ implementation ก่อน handover; ส่วน Local รุ่นเก่าถูกเก็บไว้เป็นประวัติ
+
 ## สถานะปัจจุบัน — API เท่านั้น (15 พฤศจิกายน 2026)
 
 ตามคำสั่ง PM ถอดการรันโมเดล AI Local ออก: Whisper/Pyannote บนเครื่อง, Ollama transport, GPU/CUDA helpers และ dependencies ที่เกี่ยวข้อง ตัวติดตั้ง `run.bat`/`run.sh`, `requirements.txt`, `pyproject.toml` ใช้ชุด API เท่านั้น
@@ -106,7 +154,7 @@ Pipeline เดิม:
 | `smartvoice/ui_helpers.py` | แสดงชื่อโมเดลตาม provider ใน sidebar |
 | `pages/1_📤_Admin.py` | ใช้ readiness ตาม provider ก่อนประมวลผล |
 | `pages/4_Settings.py` | เลือก provider/รุ่นและใส่ key ผ่านช่องรหัสผ่าน; เก็บ key เดิมเมื่อเว้นว่าง; รอบนี้แก้ไม่เตือน GPU/ตรวจ combo local เมื่อใช้ speech API และแก้คำแนะนำเปิดแอปใหม่ |
-| `.env.example` | ตัวอย่างตัวแปร API ไม่มี key จริง; ค่าเริ่มต้นยังคง local/Ollama |
+| `.env.example` | ตัวอย่างตัวแปร API ไม่มี key จริง; ค่าเริ่มต้นยังคง local/Ollama (ณ 14 พ.ย. — ตั้งแต่ `0c66644` ค่าเริ่มต้นเป็น `pyannote_api`/`typhoon` แล้ว) |
 | `requirements-api.txt` | dependencies สำหรับ API โดยไม่ติดตั้ง torch/CUDA/transformers/Ollama; pin Streamlit 1.55.0 |
 | `SETUP.md` | วิธีติดตั้ง API, ค่า config, ข้อจำกัด และวิธีกู้คืนงานจาก checkpoint |
 | `tests/test_api_backends.py` | ทดสอบ provider/payload/errors/cache/resume/cancellation/redaction/Settings รวม regression คำเตือน GPU |
@@ -141,7 +189,7 @@ Checkpoint `<audio-path>.smartvoice-api.json` เก็บ job ID และผ�
 - รอบสุดท้ายหลังแก้ Settings และกำหนด TEMP/TMP ภายในโปรเจ็กต์: **552 passed in 90.26s** ไม่มี tests ล้มเหลวในชุดที่รัน
 - `python -m pip check`: **No broken requirements found**
 - Tests ครอบคลุม API จำลอง, Settings ผ่าน Streamlit AppTest, pipeline และ business rules เดิม, DB/auth/audit และหน้าใช้งานตามชุดเดิม
-- เว้น `tests/test_config.py` ตาม AGENTS เพราะมีผลข้างเคียงกับ environment และต้องใช้ torch ซึ่งไม่ได้ติดตั้งในชุด API
+- เว้น `tests/test_config.py` ตาม AGENTS เพราะมีผลข้างเคียงกับ environment และต้องใช้ torch ซึ่งไม่ได้ติดตั้งในชุด API (ณ 14 พ.ย. — ปัจจุบันไฟล์นี้ไม่ต้องใช้ torch และรันรวมในชุด 541 แล้ว)
 - ไม่ได้ทดสอบ inference local/GPU, API keys จริง, คุณภาพเสียงจริง, provider rate limits จริง, cloud/network deployment หรือโหลดหลายผู้ใช้
 
 คำสั่งทดสอบที่ผ่านบนเครื่องนี้ (PowerShell ที่ root โปรเจ็กต์):
@@ -168,6 +216,8 @@ py -3.11 -m venv .venv
 ```
 
 ข้ามคำสั่งสร้าง venv ถ้ามีแล้ว เครื่องนี้ทดสอบด้วย Python 3.12.14; โหมด local ใช้ Python 3.10/3.11 ตามคู่มือเดิม โหมด API ให้ใช้คำสั่งเปิด Streamlit ด้านบน เพราะ `run.bat`/`run.sh` และ dependencies หลักยังเป็นชุด local เต็ม
+
+> หมายเหตุ (ตรวจ 15 พ.ย. 2026): ข้อความย่อหน้าบนเป็นสถานะ 14 พ.ย. ตั้งแต่ `0c66644` `requirements.txt` ชี้ไป `requirements-api.txt` และ `run.bat`/`run.sh` ติดตั้งชุด API แล้ว ใช้ launcher ได้ตามปกติ; `preflight.py` รับ Python 3.10–3.12 เท่านั้น
 
 เปิด `http://localhost:8501` ตั้ง provider/key ใน Settings แล้วบันทึกและเปิดแอปใหม่ หากยังไม่มีบัญชี แอปมีบัญชี bootstrap ตาม `SETUP.md`/`auth.py` ให้เปลี่ยนรหัสผ่านก่อนเปิดให้ผู้อื่นใช้งาน ไม่เก็บรหัสผ่านจริงในเอกสารนี้
 

@@ -11,11 +11,13 @@
 
 **SmartVoice** — AI Call Center Analytics สำหรับสายภาษาไทย
 
-**Pipeline ภาพรวม:** `audio (.wav/.mp3) → Whisper STT → Pyannote diarization → LLM speaker correction → LLM analysis → insight_rules (ตรวจคำตอบ AI) → SQLite → Streamlit UI`
+**Pipeline ภาพรวม:** `audio (.wav/.mp3) → pyannoteAI API (Whisper Turbo + Precision diarization) → LLM speaker correction (Typhoon API) → LLM analysis (Typhoon API) → insight_rules (ตรวจคำตอบ AI) → SQLite → Streamlit UI`
+
+เว็บ, SQLite, ไฟล์เสียง, checkpoint และ background threads ยังอยู่บนเครื่องที่รันแอป — PostgreSQL, object storage, distributed worker และ Cloud deployment เป็น **แผนเท่านั้น ยังไม่มีโค้ด** ดู `docs/cloud_migration_plan.md` และ `PROJECT_STATUS.md`
 
 **Domain:** call-centre ของบริษัทขายที่นอน/เฟอร์นิเจอร์ (Restonic, โลตัส) — ลูกค้าโทรเข้าร้องเรียน/ติดตามคำสั่งซื้อ/เคลมประกัน
 
-**Tech:** Python 3.10+, Streamlit, SQLite, `faster-whisper` / `transformers` Whisper, `pyannote.audio` 3.1, Ollama LLM (`scb10x/llama3.1-typhoon2-8b-instruct`), `fpdf2` + `uharfbuzz` (รายงาน PDF), `openpyxl` (Excel)
+**Tech:** Python 3.10–3.12, Streamlit 1.55, SQLite, `requests` → pyannoteAI API (`precision-2`/`precision-3` + `faster-whisper-large-v3-turbo`) และ Typhoon API (`typhoon-v2.5-30b-a3b-instruct`), `fpdf2` + `uharfbuzz` (รายงาน PDF), `openpyxl` (Excel) — dependencies ทั้งหมดอยู่ใน `requirements-api.txt` (ไม่มี torch / CUDA / transformers / pyannote.audio / Ollama แล้ว ห้ามนำกลับมา)
 
 ---
 
@@ -23,15 +25,19 @@
 
 **OS:** Windows + PowerShell. **อย่าใช้ `cd`** — ตั้ง `Cwd` แทน
 
-**Working dir:** `c:\Users\User\CascadeProjects\project\smartvoice`
+**Working dir:** root ของ repository นี้ (`SojiKlay/smartvoice-master`) — ระวังสับสนกับ repo ยุค Local เดิมที่อาจอยู่ในเครื่องเดียวกัน
 
-**Python interpreter:** `.venv\Scripts\python.exe` (Windows venv path)
+**Python interpreter:** `.venv\Scripts\python.exe` (Windows venv path, Python 3.10–3.12)
 
 ```powershell
-# รัน test (ไม่รวม test_config.py — มี side effects กับ env)
-& ".venv\Scripts\python.exe" -m pytest tests\ --ignore=tests\test_config.py -q
+# รัน test ทั้งชุดด้วย API จำลอง — ตั้ง env เฉพาะ process, ไม่อ่าน .env, ไม่ใช้ key จริง
+$env:STT_PROVIDER='pyannote_api'; $env:LLM_PROVIDER='typhoon'; $env:PYTHON_DOTENV_DISABLED='1'
+$env:TYPHOON_API_KEY='test-only'; $env:PYANNOTE_API_KEY='test-only'
+$env:DB_PATH=Join-Path $PWD '.pytest_cache/runtime/test.db'
+$env:TEMP=Join-Path $PWD '.pytest_cache/temp'; $env:TMP=$env:TEMP
+& ".venv\Scripts\python.exe" -m pytest tests\ -q --basetemp=.pytest_cache/work
 
-# รันเฉพาะไฟล์
+# รันเฉพาะไฟล์ (env เดียวกับด้านบน)
 & ".venv\Scripts\python.exe" -m pytest tests\test_pipeline.py -v
 
 # เปิดแอป
@@ -43,7 +49,9 @@ run.bat                 # Windows
 ./run.sh                # Linux/macOS
 ```
 
-**Test baseline ล่าสุด:** 492 tests, ต้องผ่าน 100% ก่อน commit ทุกครั้ง
+**Test baseline ล่าสุด:** 541 tests (ทั้ง `tests/` รวม `test_config.py`) ต้องผ่าน 100% ก่อน commit ทุกครั้ง — ตรวจซ้ำ 15 พ.ย. 2026: 541 passed บน Python 3.12 ด้วย env ด้านบน เป็น tests ที่ mock API **ไม่ใช่หลักฐาน** ว่า live API / PostgreSQL / Cloud ใช้งานได้
+
+**ก่อนประมวลผลสายจริง:** ต้องตั้ง `PYANNOTE_API_KEY` และ `TYPHOON_API_KEY` (หน้า Settings หรือ `.env`) ทุกสายจะส่งเสียงไป pyannoteAI และส่งข้อความไป Typhoon และมีค่าใช้จ่าย ใช้เฉพาะเสียงที่ได้รับอนุญาตให้ส่งออกภายนอก
 
 **เข้าใช้งานครั้งแรก:** ถ้ายังไม่มีบัญชีใดในระบบ แอปสร้าง `admin` / `admin1234` ให้อัตโนมัติ (มีคำเตือนค้างจนกว่าจะเปลี่ยนรหัสผ่าน)
 
@@ -73,7 +81,7 @@ smartvoice/
 │   ├── db.py                   # SQLite schema + migrations + CRUD
 │   ├── pipeline.py             # 🔥 Core orchestrator (70 KB) — speaker correction, splitters, merge
 │   ├── prompts.py              # 🔥 LLM prompts (54 KB) — system+user สำหรับทุก LLM call
-│   ├── ollama_client.py        # LLM client + JSON extraction (5 คำขอวิเคราะห์)
+│   ├── ollama_client.py        # LLM client (ชื่อเดิมเพื่อ imports แต่เรียก Typhoon API เท่านั้น) + JSON extraction (5 คำขอวิเคราะห์)
 │   ├── insight_rules.py        # 🔥 ตรวจทุกคำตอบของ LLM ก่อนบันทึก (quote, คะแนน, ธง, รายชื่อ)
 │   ├── file_manager.py         # Upload + SHA-256 dedup + ชื่อไฟล์ → เบอร์/ทิศทาง/รหัสพนักงาน/เวลาโทร + หลักฐานการซื้อ
 │   ├── labels.py               # คำไทยของทุกรหัส + thai_time() (UTC → UTC+7)
@@ -88,14 +96,14 @@ smartvoice/
 │   ├── auth.py                 # PBKDF2 hashing, บัญชี DB/.env, ROLE_PERMISSIONS
 │   ├── audit.py                # คำศัพท์ audit trail + record() + redact() + diff_fields()
 │   ├── customer_entry.py       # กติกา validate / บันทึก / ซ่อน / กู้คืน / ยกเลิกทะเบียน ของหน้าเพิ่มข้อมูล
-│   ├── env_settings.py         # อ่าน/เขียน .env + GPU detect + combo validation
-│   ├── preflight.py            # Deployment readiness checks
+│   ├── env_settings.py         # อ่าน/เขียน .env (read_env / write_env / mask_secret) — GPU/combo helpers ถูกถอดแล้ว
+│   ├── preflight.py            # Readiness checks: Python, โหมดสาธิต, รหัส bootstrap, มี API key หรือไม่ (ไม่เรียก API)
 │   ├── logger.py               # Rotating file logger
 │   └── stt/                    # Speech-to-Text sub-package
-│       ├── orchestrator.py     # ties audio→transcribe→diarize
-│       ├── audio.py            # load + resample + denoise
-│       ├── transcribe.py       # HF transformers + faster-whisper backends
-│       └── diarize.py          # pyannote 3.1 + speaker assignment
+│       ├── orchestrator.py     # pyannoteAI: upload → job → poll → segments + checkpoint + MOCK_STT
+│       ├── audio.py            # has_thai() — helper ข้อความเท่านั้น
+│       └── diarize.py          # helpers จัด label ผู้พูด / กลุ่มคำ (ไม่โหลดโมเดล)
+│                               # (transcribe.py ถูกถอดออกพร้อม local inference)
 ├── tests/                      # pytest unit tests
 ├── data/                       # 🚫 gitignored runtime data (audio, db, logs, models, warranty_proofs)
 └── docs/                       # Architecture, DB design, user manual
@@ -117,7 +125,8 @@ smartvoice/
 
 ### 4.2 Testing discipline
 - เขียน test ก่อนทำงาน implementation ใหญ่
-- รัน test ทุกครั้งหลังแก้: `pytest tests\ --ignore=tests\test_config.py -q`
+- รัน test ทุกครั้งหลังแก้: ทั้งชุด `tests\` ด้วย env API จำลองในข้อ 2
+- แยกผล mock tests ออกจากหลักฐาน live API / PostgreSQL / Cloud ทุกครั้งที่รายงาน
 - ถ้าทำ test pass ไม่ได้ → **ห้ามแก้ test ให้มันผ่าน** ให้แก้ code แทน
 
 ### 4.3 Code style
@@ -168,14 +177,14 @@ smartvoice/
 
 ### 5.2 LLM analysis (`ollama_client.py`) — AI เสนอ `insight_rules.py` ตัดสิน
 
-5 คำขอแยกกัน ทุกคำขอ `format: "json"`, temperature 0, `num_ctx` = `OLLAMA_NUM_CTX` (ค่าเริ่มต้น 12288 — ค่าตั้งต้นของ Ollama บน GPU 16 GB คือ 4096 ซึ่งตัดต้น prompt QA ทิ้งเงียบ ๆ):
+5 คำขอแยกกันไปที่ Typhoon API (นอกจากนี้ยังมีแก้ผู้พูด, เกลาข้อความ และจับคู่เคส) temperature 0, `max_tokens` = `TYPHOON_MAX_TOKENS` (ค่าเริ่มต้น 4096) — ไม่ได้ใช้ JSON mode ของบริการ (`json_mode` ใน `chat()` ถูกละไว้) แอปแยก JSON เอง; ค่า `num_ctx` / `format: "json"` ของ Ollama ไม่มีแล้ว:
 1. `extract_summary_and_topics()` — summary, topic, **topic_detail**, keywords, brand/platform mentions
 2. `analyze_sentiment()` — customer_quote → reason → sentiment (ให้หยิบคำพูดก่อน ป้ายจึงยึดกับหลักฐาน)
 3. `evaluate_agent_qa()` — QA checklist: `"found": [{"item": "P1", "quote": ...}]` + `customer_had_problem`
 3b. ฟังก์ชันเดียวกัน **แยกคำขอ** สำหรับสิ่งที่ต้องทำต่อ (`prompts.NEXT_ACTION_USER`) — ถามรวมกับ checklist แล้วโมเดลตอบ `pending: false` กับสายที่ยังมีงานค้างชัดเจน
 4. `detect_anomaly()` — category + evidence_quote + reason
 
-ทุกคำขอ → `extract_json()` → empty dict ถ้า parse fail (log + ทำต่อ) Transcript ยาวเกิน `MAX_CHARS` (14,000) ถูกตัด**ช่วงกลาง** (เดิมเก็บแค่ 6,000 ตัวแรก ทำให้ 4 ใน 11 สายจริงเสียช่วงปิดสาย)
+**คำขอที่ล้มเหลวทำให้สายนั้นล้มเหลว — ไม่บันทึกค่าว่างแบบเงียบ ๆ:** ไม่มี key, เชื่อมต่อไม่ได้/timeout, HTTP ไม่ใช่ 2xx (รวม 429), คำตอบถูกตัด (`finish_reason == "length"`), คำตอบว่าง หรือ JSON อ่านไม่ได้ → `ollama_client.APIError` แล้ว `process_call()` ตั้งสายเป็น `error` ไม่มี retry อัตโนมัติ เพราะทุกครั้งที่ retry มีค่าใช้จ่าย (ทางที่ `except Exception` คืนค่าเดิม/ค่าว่าง ทำงานเฉพาะ provider อื่นที่ `config.api_settings()` ไม่ยอมรับแล้ว) — ผลที่วัดในส่วนนี้ได้จาก Typhoon 8B บน Ollama รุ่นเดิม ยังไม่ได้ตรวจซ้ำกับรุ่น API; Transcript ยาวเกิน `MAX_CHARS` (14,000) ถูกตัด**ช่วงกลาง** (เดิมเก็บแค่ 6,000 ตัวแรก ทำให้ 4 ใน 11 สายจริงเสียช่วงปิดสาย)
 
 **ห้ามเชื่อตัวเลข ธง หรือรายการที่โมเดลส่งมา — `insight_rules.py` คำนวณใหม่** (ทดสอบกับสายจริง 11 สาย ดู `tests/test_insight_rules.py`):
 - QA: ข้อหนึ่งนับเมื่อ quote เป็นสิ่งที่พนักงานพูด (`agent_said()`: ไม่อยู่ในบรรทัด `Customer:` หรือเป็นน้ำเสียงพนักงาน — diarization มักทิ้งคำพนักงานเป็น "Speaker 0" หรือรวมไปในบรรทัดลูกค้า); P2 (ค่ะ/ครับ) วัดจากสัดส่วน ไม่ใช้ quote; คะแนน = สัดส่วนข้อที่ใช้ได้ (P3 ใช้เมื่อลูกค้ามีปัญหา) แปลงเป็น 1-5 — prompt เก่าให้ 5/5 ทุกสาย
@@ -232,6 +241,7 @@ smartvoice/
 **ห้าม flag** เคสที่ลูกค้าโทรร้องเรียน/ขอคืนสินค้าตามปกติ + ลงท้ายสุภาพ — นั่นคือ negative sentiment ปกติ ไม่ใช่ anomaly
 
 ### 6.3 Common STT errors ที่ต้องระวัง
+(รายการนี้มาจาก Whisper ภาษาไทยในเครื่องรุ่นเดิม — รุ่น API `faster-whisper-large-v3-turbo` ยังไม่ได้ทดสอบกับสายจริง อาจพลาดคนละแบบ ให้ตรวจในการทดสอบ live ครั้งแรก)
 - ชื่อบริษัท "โอมาสนา" / "โนโลตัส" / "ฟิวทู" / "โลตัส" — Whisper สับสนชื่อยี่ห้อบ่อย
 - "ที่นอน" บางครั้งเป็น "ที่โน่น" / "ทีเนี่ย"
 - เลขโทรศัพท์ Thai มักผิดเป็นไทย-อังกฤษปน
@@ -266,18 +276,18 @@ Filename รูปแบบ `YYYYMMDDHHMMSS-CALLID.NNN-{AGENT|PHONE}-{PHONE|AGEN
 
 ## 6.7 Settings page (`pages/4_Settings.py`)
 
-**ตั้งใจไม่ใช้ `st.form`** เพราะ form widget ไม่ fire `on_change` จนกว่าจะ submit — ทำให้ feature "auto-apply combo on model change" ใช้ไม่ได้ใน form
+ไม่ใช้ `st.form` — widget ทุกตัวมี `key=` แล้วปุ่ม `st.button("บันทึกการตั้งค่า")` บันทึกทุกค่าลง `.env` พร้อมกัน
 
 โครงสร้างปัจจุบัน:
-- Widget ทุกตัวมี `key=` + session_state seeded จาก `.env`
-- Whisper model selectbox มี `on_change=_apply_model_recommendations` → ปรับ Backend/Device/Compute ทันที
-- ปุ่ม Save เป็น `st.button` ปกติ (ไม่ใช่ `form_submit_button`) — บันทึก `.env` ครั้งเดียวเมื่อกด
+- ปุ่ม preset "โหมดสาธิต" (`MOCK_STT=true`) / "โหมดใช้งานจริง" — บันทึก audit
+- รุ่น pyannoteAI (`precision-2` / `precision-3`; `STT_API_MODEL` ตายตัวเป็น `faster-whisper-large-v3-turbo`) และรุ่น Typhoon (พิมพ์เอง ค่าเริ่มต้น `typhoon-v2.5-30b-a3b-instruct`)
+- ช่อง API key แบบรหัสผ่าน: เว้นว่าง = ใช้ค่าเดิม, ติ๊ก = ลบ key ที่บันทึกไว้; หน้าแสดงแค่ว่าตั้งค่าแล้วหรือยัง
+- Discord webhook + ปุ่มทดสอบ, ตรวจความพร้อม (cache 5 นาที ตรวจแค่ว่ามี key)
+- เปลี่ยน key แล้วต้องเปิดแอปใหม่
 
-Helpers ใน `env_settings.py`:
-- `gpu_available()` / `gpu_device_name()` — ตรวจ CUDA, safe ถ้า torch ไม่มี
-- `validate_whisper_combo(model, backend, device, compute, has_gpu)` → list[(severity, message)]
-- `recommended_combo_for_model(model, has_gpu=None)` → tuple(backend, device, compute) | None
-- `_MODEL_RECOMMENDED_COMBO` — table mapping model → preferred combo (เพิ่ม model ใหม่ใน dropdown ต้องเพิ่มใน table นี้ด้วย)
+Helpers ใน `env_settings.py`: `ensure_env_file()`, `read_env()`, `write_env()` (เขียน `.env` และ `os.environ` ของ process นี้เท่านั้น), `env_bool()`, `mask_secret()` — GPU detection / Whisper combo validation / `_MODEL_RECOMMENDED_COMBO` ถูกถอดออกพร้อม local inference
+
+**หมายเหตุ Cloud:** การบันทึกจากหน้านี้แก้ไฟล์ `.env` บนเครื่องเดียว ใช้กับหลาย instance ไม่ได้ — production ต้องย้ายความลับไป secrets service (แผนใน `docs/cloud_migration_plan.md` §9)
 
 ## 6.8 Login, สิทธิ์ และนโยบายบัญชี
 
@@ -326,7 +336,7 @@ Helpers ใน `env_settings.py`:
 
 - `audit_log` เป็น **append-only** — ห้ามมีโค้ด UPDATE/DELETE แถวในตารางนี้
 - `audit.record()` **ห้าม raise** — log ล้มต้องไม่ทำให้งานของผู้ใช้หาย
-- `audit.redact()` ตัดค่า `password` / `password_hash` / `hf_token` / `discord_webhook_url` ออก (เก็บชื่อฟิลด์ไว้)
+- `audit.redact()` ตัดค่า `password` / `password_hash` / `typhoon_api_key` / `pyannote_api_key` / `discord_webhook_url` / `hf_token` ออก (เก็บชื่อฟิลด์ไว้) — ตัดตามชื่อฟิลด์เท่านั้น ไม่ใช่ตัวกรองข้อมูลส่วนบุคคลในข้อความทั่วไป
 - entry แบบ `update` เก็บ `{field: [ก่อน, หลัง]}` จาก `audit.diff_fields()` และถ้าไม่มีอะไรเปลี่ยนจะไม่เขียน entry
 - เพิ่ม action ใหม่ที่เปลี่ยนข้อมูล → ต้องมี `audit()` ข้าง ๆ (`tests/test_audit.py` ตรวจ)
 
@@ -383,8 +393,8 @@ Dashboard เดิมเป็นหน้าเดียว ~1,000 บรร�
 ### 7.1 อย่าใช้ `cd` ใน `run_command`
 PowerShell ใน Windows → ตั้ง `Cwd` แทน `cd && ...`
 
-### 7.2 อย่าทำ test_config.py พัง
-มัน manipulate env vars และ side-effect ต่อ test อื่น → ใช้ `--ignore=tests\test_config.py`
+### 7.2 `test_config.py` รันรวมกับชุดเต็มได้แล้ว
+เดิมไฟล์นี้แก้ env vars และต้องใช้ torch จึงสั่งให้ `--ignore=tests\test_config.py` ตอนนี้เหลือแค่ tests ของ helper ข้อความ/การจัดกลุ่ม จึงรันรวมกับชุดเต็ม (นับรวมใน 541)
 
 ### 7.3 อย่าแก้ `_AGENT_MARKERS` / `_CUSTOMER_MARKERS` แบบเดาๆ
 markers ใช้กับ `_enforce_role_rules` ที่ scoring ตำแหน่ง + role — เพิ่ม marker ที่กำกวมจะทำให้ flip ผิด ทำ regression test ครอบคลุมก่อนเพิ่ม
@@ -423,17 +433,30 @@ Streamlit ทิ้งค่าเก่าไว้ใน session state แต�
 ### 7.14 fpdf2 ตัดบรรทัดภาษาไทยแบบตัวอักษรค้าง
 `multi_cell(..., wrapmode=WrapMode.CHAR)` ค้างไม่จบเมื่อเจอข้อความไทยยาวไม่มีช่องว่างเต็มความกว้าง — รายงานตัดบรรทัดเองด้วย `dashboard_report.wrap_text()` (ไม่แยกพยัญชนะจากสระ/วรรณยุกต์) แล้ววาดทีละบรรทัดด้วย `cell()`
 
+### 7.15 ข้อความลูกค้าหลุดเข้า log
+`correct_speakers()` log คำตอบของโมเดลสูงสุด 400 ตัวอักษร และ `process_call()` เก็บ traceback เต็มใน `calls.error_msg` — ทั้งสองอาจมีคำพูดลูกค้า ระวังก่อนส่ง log ไประบบ log กลางบน Cloud
+
+### 7.16 การล็อกหลังใส่รหัสผิดอยู่ใน session ของเบราว์เซอร์
+`ui_helpers._register_login_failure` เก็บจำนวนครั้งใน `st.session_state` เปิด session ใหม่ก็นับใหม่ — ไม่ใช่การกันเดารหัสฝั่ง server ต้องเพิ่มก่อนเปิดแอปสู่อินเทอร์เน็ต
+
+### 7.17 บัญชี bootstrap `admin` / `admin1234`
+`auth.ensure_default_admin()` สร้างให้ทุกครั้งที่ไม่มีบัญชีใดเลย ฐานข้อมูลใหม่บนเครื่องที่เปิดสู่อินเทอร์เน็ตจะมีรหัสที่ทุกคนรู้จนกว่าจะมีคนเปลี่ยน
+
+### 7.18 ประมวลผลซ้ำมีค่าใช้จ่าย
+STT ใช้ checkpoint `<ไฟล์เสียง>.smartvoice-api.json` ซ้ำได้ แต่ LLM ถูกเรียกใหม่ทุกครั้ง; checkpoint ค้าง `submitting` ต้องตรวจประวัติงานที่ pyannoteAI ก่อนลบ; กดหยุดในแอปไม่ยกเลิกงานฝั่งผู้ให้บริการ; checkpoint มี transcript ดิบ ห้าม commit หรือ log
+
 ---
 
 ## 8. ก่อน commit / ก่อนปิดงาน
 
-- [ ] รัน `pytest tests\ --ignore=tests\test_config.py -q` → ผ่าน 100%
+- [ ] รัน `tests\` ทั้งชุดด้วย env API จำลองในข้อ 2 → ผ่าน 100%
+- [ ] stage ไฟล์แบบระบุชื่อ และตรวจ staged diff ว่าไม่มี `.env`, key, `data/`, เสียง, checkpoint, ไฟล์ DB หรือข้อความลูกค้า
 - [ ] เพิ่ม regression test สำหรับการแก้ bug
 - [ ] ลบไฟล์ชั่วคราว `_*.py`, `_*.txt` ออกจาก project root
 - [ ] ไม่แตะ `.env` (gitignored — มี secrets)
 - [ ] ไม่แตะ `data/` (gitignored — runtime data)
 - [ ] ถ้าแก้ schema DB → migration ต้องไม่ break ของเก่า + อัปเดต `docs/database_design.md`
-- [ ] ถ้าเปลี่ยน prompt → ทดสอบ end-to-end อย่างน้อย 1 ไฟล์เสียงจริงก่อน
+- [ ] ถ้าเปลี่ยน prompt → ทดสอบ end-to-end อย่างน้อย 1 ไฟล์เสียงจริงก่อน (ผ่าน API ที่มีค่าใช้จ่าย — ต้องได้รับอนุมัติเรื่องข้อมูลและค่าใช้จ่าย)
 - [ ] action ใหม่ที่เปลี่ยนข้อมูล → มี `audit()` บันทึกไว้
 - [ ] ห้ามลบลูกค้า/ทะเบียน/SO/บัญชีผู้ใช้ออกจาก DB จริง — ใช้ซ่อน / ปิดใช้งาน
 - [ ] ป้ายใหม่ใน UI เป็นคำ ไม่ใช่ emoji
@@ -445,6 +468,8 @@ Streamlit ทิ้งค่าเก่าไว้ใน session state แต�
 | ไฟล์ | เนื้อหา |
 |------|---------|
 | `CLAUDE.md` | คู่มือสำหรับ Claude Code — เนื้อหาเดียวกับไฟล์นี้ในภาษาอังกฤษ (แก้ไฟล์หนึ่งให้แก้อีกไฟล์ด้วย) |
+| `PROJECT_STATUS.md` | สถานะล่าสุด + ผลทดสอบ + งานถัดไป |
+| `docs/cloud_migration_plan.md` | แผนย้าย Cloud / PostgreSQL / storage / worker (Planned / Not Implemented) |
 | `README.md` | ภาพรวมโปรเจค + tech stack |
 | `SETUP.md` | คู่มือติดตั้งเชิงลึก + troubleshooting |
 | `ONE_CLICK_RUN.md` | คู่มือ launcher สำหรับเครื่อง demo / handoff |
