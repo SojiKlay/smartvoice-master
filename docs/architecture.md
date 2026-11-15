@@ -1,5 +1,42 @@
 # SmartVoice — Architecture & Data Flow
 
+## Architecture ปัจจุบันและขอบเขต Cloud — 15 พฤศจิกายน 2026
+
+ตรวจจาก source commit `0c66644` ซึ่งตรงกับ GitHub master ตอนเริ่ม handover ระบบใช้ API-only แล้ว แต่ PostgreSQL/Cloud storage/distributed workers ยังเป็น **Planned / Not Implemented** ดู [cloud_migration_plan.md](cloud_migration_plan.md) สำหรับ roadmap, schema/transaction design, security, tests และ rollback
+
+```text
+Streamlit / local audio
+  → pyannoteAI API: Whisper Turbo + Precision diarization
+  → pipeline speaker rules ↔ Typhoon API: correction / cleanup / analysis
+  → insight_rules → SQLite (9 application tables) → Streamlit dashboards
+  + local audio/proofs/checkpoints + daemon threads ใน web process
+```
+
+`smartvoice/stt/orchestrator.py` ทำ upload/job/poll และ reuse/resume checkpoint; `smartvoice/ollama_client.py` คงชื่อเพื่อ imports แต่เรียก Typhoon เท่านั้น Local Whisper/Pyannote/Ollama execution ถูกถอดแล้ว `MOCK_STT` จำลองเสียงอย่างเดียว ยังใช้ LLM API
+
+API failures/คำตอบว่างหรือถูกตัด/JSON ใช้งานไม่ได้ไม่ถือเป็นผลวิเคราะห์สำเร็จ; checkpoint เก็บ job ID/output ของเสียงเพื่อกลับมาทำต่อ แต่การส่งงานที่ไม่ทราบ ID ต้องตรวจประวัติผู้ให้บริการก่อนส่งซ้ำ การหยุดในแอปไม่ยกเลิก remote job และการรันใหม่อาจเรียก LLM เสียเงินซ้ำ
+
+กฎธุรกิจ, authentication/roles, insight validation, soft delete/cancel/restore, audit และ SQLite ยังคงอยู่ `claim_case` ป้องกันแย่งเคสด้วย conditional UPDATE เดียว แต่ last-admin protection และ check-then-insert/import ต้องออกแบบ concurrency เพิ่มเมื่อย้าย DB
+
+```text
+เป้าหมาย — Planned / Not Implemented
+HTTPS → Streamlit → DB facade / adapter → PostgreSQL
+            ↓                              ↑
+     Private object storage ↔ worker ↔ durable job state
+                                ↓
+                       pyannoteAI / Typhoon
+```
+
+Phase ปัจจุบันคือ **4 — PostgreSQL Migration Design**: รักษา public DB contract, ทบทวน SQLite-specific SQL/JSON/time และทำ transaction/concurrency tests ก่อนย้ายจริง ปัจจุบัน `call_customer_links` ไม่มี UNIQUE(call_id) จึงห้ามสมมติว่า INSERT OR REPLACE คือ upsert หนึ่ง link ต่อสาย การนำเข้า SO commit รายใบ ไม่ใช่ทั้งไฟล์; audit เขียนแยกและไม่ raise เมื่อ SQLite error ต้องไม่เปลี่ยน semantics เหล่านี้โดยไม่ได้ตัดสินใจ
+
+`ui_helpers` ใช้ daemon threads/locks และ `processing_control` ใช้ module memory ร่วมภายใน process เท่านั้น PostgreSQL ไม่ทำให้คิวหรือ session กระจายหลายเครื่องอัตโนมัติ ต้องมี storage, durable job/lease, retry/recovery และ session design ก่อนเพิ่ม replicas
+
+PM แจ้งว่าเคยทดลอง AWS Academy EC2 แต่ยังไม่ยืนยัน version/config ของ API-only ล่าสุด ไม่มีการตรวจหรือสร้าง AWS resources ใน handover นี้ ผล automated mocks ไม่ใช่หลักฐานว่า live API/Cloud/multi-user deployment ผ่านแล้ว
+
+## เอกสารรายละเอียดเดิมและประวัติ
+
+ส่วนด้านล่างเก็บไว้เพื่ออ้างอิงกฎธุรกิจและประวัติ Architecture รูป Local/model settings ที่ยังปรากฏไม่ใช่พฤติกรรมปัจจุบัน ให้ใช้ภาพ API-only ด้านบนและ source เป็นหลัก งานส่งต่อนี้ไม่เขียนทับประวัติที่ไม่เกี่ยวข้อง
+
 > อัปเดต 15 พฤศจิกายน 2026: ระบบใช้ pyannoteAI และ Typhoon API เท่านั้น ข้อความเกี่ยวกับการติดตั้ง/ตั้งค่าโมเดล Local, Ollama, GPU และ HF_TOKEN ด้านล่างเป็นข้อมูลรุ่นเดิม ให้ใช้ [SETUP.md](../SETUP.md) สำหรับการติดตั้งและย้ายค่าปัจจุบัน เว็บ ฐานข้อมูล และไฟล์ runtime ยังอยู่ในเครื่อง/เซิร์ฟเวอร์
 
 ---
