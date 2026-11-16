@@ -1,6 +1,38 @@
 # SmartVoice — สถานะสำหรับพัฒนาต่อ
 
-## สถานะล่าสุด — Phase 5: Pilot Validation Passed (16 พฤศจิกายน 2026)
+## สถานะล่าสุด — Phase 6 Milestones A/B พัฒนาแล้ว; Cloud Deployment หยุดชั่วคราว (17 พฤศจิกายน 2026)
+
+เป้าหมายยังเป็น **Limited Pilot สำหรับพนักงานกลุ่มเล็ก** ไม่ใช่ Production Ready **Phase 6 ยังไม่ได้ Deploy ขึ้น AWS** และ **STT ยังเป็นปัญหาที่ยังไม่ได้ยืนยันว่าแก้สำเร็จ**
+
+### Git และงานที่ตรวจพบจากไฟล์จริง
+
+- Workspace: `C:\Users\Win10\Downloads\smartvoice-git`
+- Branch ที่ตรวจจริง: `test/phase6-e2e`
+- Commit ล่าสุดที่ตรวจสอบ: `2260fcb` — `feat: add case linking retry UI and audit`; Working Tree สะอาดก่อนแก้เอกสารครั้งนี้
+- **Milestone A พัฒนาแล้ว** (`59b7d87`): schema v2 เพิ่มสถานะ/แผน/ข้อผิดพลาด/เวลาของ Case Linking แยกจาก AI Analysis; `done` หมายถึงวิเคราะห์สำเร็จ; สร้างเคสและเชื่อมสายแบบ transaction; retry ใช้แผนเดิมโดยไม่เรียก AI และป้องกันเคสซ้ำสำหรับสายเดียวกัน; แผนใช้ไม่ได้ต้องหยุดตรวจสอบ ไม่ลบหรือจับคู่ orphan เก่าอัตโนมัติ
+- **Milestone B พัฒนาแล้ว** (`2260fcb`): warning แยกใน Admin/รายละเอียด Call Summaries, retry เฉพาะ Admin/Supervisor พร้อม session/authorization revalidation และ audit คำขอ/ผล; missing/invalid/stale plan ต้องตรวจสอบด้วยคน ยังไม่มี UI ยืนยันแผนใหม่
+- ตรวจพบ implementation ใน `migrations/002_case_linking.sql`, `smartvoice/database_backend.py`, `db.py`, `pipeline.py`, `case_workflow.py`, `ui_helpers.py`, `audit.py` และ tests ที่เกี่ยวข้อง การมีโค้ดไม่ใช่หลักฐานว่า deploy หรือผ่าน live APIs แล้ว
+
+### ผลทดสอบ Local และที่มาของหลักฐาน
+
+- ผล targeted tests จากรอบพัฒนา Milestone A: **273 passed / 0 failed / 17 skipped**; Milestone B: **231 passed / 0 failed / 0 skipped** ใช้ SQLite ทดสอบแยก, mock AI และปิด external network ไม่ใช่ผล full suite ของ commit ล่าสุด และไม่ควรรวมจำนวนข้ามรอบ
+- **PostgreSQL Integration Tests: 11 passed, 1 deselected** — ผลทดสอบ Local ที่ผู้ใช้รายงานยืนยันล่าสุด ไม่ใช่ผลรันซ้ำในรอบเอกสารนี้; ยังไม่ได้ระบุชื่อ/เหตุผลของ test ที่ deselected จึงไม่ถือว่ากรณีนั้นผ่านแล้ว
+- **Local PostgreSQL Migration v1 → v2 ผ่านการทดสอบกับข้อมูลจำลอง** ตามผลที่ผู้ใช้ยืนยัน
+- **Local PostgreSQL Backup/Restore ผ่านการทดสอบ และตรวจสอบข้อมูลหลัง Restore แล้ว** ตามผลที่ผู้ใช้ยืนยัน
+- ผล PostgreSQL ล่าสุดขยายหลักฐานจากรอบที่ใช้ SQLite/mock แต่ไม่ได้ยืนยัน PostgreSQL ทุกเส้นทาง, load/concurrency ทุกกรณี, Phase 5 session tests บน PostgreSQL ทั้งชุด หรือ deployment บน AWS
+
+### Cloud, STT และงานที่ยังเหลือ
+
+- **AWS Free Tier Account ถูกระงับ ทำให้ Cloud Deployment หยุดชั่วคราว** ตามสถานะที่ผู้ใช้แจ้ง ไม่ได้เข้าตรวจ AWS ในรอบนี้ ผล Phase 5 บน AWS ด้านล่างเป็นประวัติ ไม่ใช่หลักฐานว่าบริการยังทำงานอยู่ในปัจจุบัน
+- **Phase 6 ยังไม่ได้ Deploy ขึ้น AWS** ผล migration/restore ใน Local ไม่ใช่หลักฐานการ migrate หรือ restore ข้อมูลบน Cloud
+- **STT ยังไม่ยืนยันว่าแก้สำเร็จ** ผล mock APIs, DB, retry และ UI ไม่รับรองคุณภาพ transcript/diarization หรือความสำเร็จของบริการเสียงจริง ต้องแยกตรวจปัญหา STT ด้วยข้อมูลและการเรียก API ที่ได้รับอนุญาตก่อนรับรอง
+- งานถัดไป: เก็บคำสั่ง/ผลทดสอบ PostgreSQL และเหตุผล deselection ให้ตรวจย้อนกลับได้; ตรวจรับ A/B รวมข้อจำกัด audit เมื่อ DB ขัดข้องและแผนที่ต้องตรวจสอบด้วยคน; ยืนยันคุณภาพ STT; ทบทวนแผน Cloud เมื่อบัญชี/สภาพแวดล้อมพร้อมและได้รับอนุมัติ ไม่ถือว่าเอกสารนี้อนุมัติ deploy หรือค่าใช้จ่าย
+
+รอบอัปเดตนี้ตรวจ Git, `PROJECT_STATUS.md`, `README.md`, `AGENTS.md` และตำแหน่ง implementation ที่เกี่ยวข้อง แล้วแก้เฉพาะ `PROJECT_STATUS.md` ไม่รัน tests/migration, ไม่แก้โค้ดหรือฐานข้อมูล, ไม่เรียก AI APIs/เชื่อม AWS และไม่ Commit หรือ Push
+
+## ประวัติ Phase 5 — Pilot Validation Passed (16 พฤศจิกายน 2026)
+
+ข้อความ Phase 5 และประวัติถัดจากนี้คงไว้เพื่ออ้างอิง ณ วันที่บันทึก รวมข้อความที่ระบุว่า Phase 6 ยังไม่ได้เริ่ม หากขัดกับสถานะปัจจุบัน ให้ยึดส่วนสถานะล่าสุดวันที่ 17 พฤศจิกายน 2026 ด้านบน
 
 เป้าหมายปัจจุบันคือ **Limited Pilot สำหรับพนักงานกลุ่มเล็ก** ไม่ใช่ Production Ready งาน Phase 5 (Multi-user, Authentication, RBAC และ Session Management) ที่ commit `c0ed6c6` Deploy บน AWS สำเร็จแล้ว
 
@@ -34,7 +66,7 @@
 
 ## ประวัติสถานะก่อน Phase 5
 
-ข้อความและคำสั่งส่งต่อด้านล่างเป็นประวัติ ณ วันที่บันทึก ไม่ใช่สถานะหรือคำสั่งให้เริ่มงานปัจจุบัน หากขัดกับส่วนล่าสุด ให้ยึดสถานะ Phase 5 ด้านบน โดยเฉพาะข้อความเดิมที่ระบุว่ายังไม่ Deploy หรือยังไม่มี PostgreSQL บน AWS
+ข้อความและคำสั่งส่งต่อด้านล่างเป็นประวัติ ณ วันที่บันทึก ไม่ใช่สถานะหรือคำสั่งให้เริ่มงานปัจจุบัน หากขัดกับส่วนล่าสุด ให้ยึดส่วนสถานะล่าสุดด้านบน โดยเฉพาะข้อความเดิมที่ระบุว่ายังไม่ Deploy หรือยังไม่มี PostgreSQL บน AWS
 
 
 ## T2 fixes และ PostgreSQL compatibility — 15 พฤศจิกายน 2026
@@ -50,7 +82,7 @@
 - รัน business-rule tests เดิมจาก test_db/auth/case_workflow/sales_orders/audit บน PostgreSQL เพิ่ม: **197 passed, 6 deselected in 83.09s** รายการที่แยกออกตรวจ schema/PRAGMA/migration ของ SQLite โดยเฉพาะและผ่านแล้วใน full suite ไม่ได้ลบหรือลด assertions ของ tests เดิม
 - ยังต้องยืนยันบน EC2: Ubuntu/systemd/Caddy, ownership หลังอัปเดตจริง, TLS/SG/IAM, pg_dump version ให้ตรง server, disk space, backup timer และ restore บน target ก่อนรับมอบ ดู runbook PostgreSQL ใน `deploy/aws-ec2/README.md` ไม่ถือว่าการทดสอบ Windows นี้รับรอง production
 
-ข้อความในส่วน T2 นี้เป็นประวัติ ณ 15 พฤศจิกายน 2026; สถานะล่าสุดให้ใช้ส่วน Phase 5 ด้านบน
+ข้อความในส่วน T2 นี้เป็นประวัติ ณ 15 พฤศจิกายน 2026; สถานะล่าสุดให้ใช้ส่วนสถานะล่าสุดด้านบน
 
 ### ส่งต่อให้ ChatGPT web / ผู้พัฒนาถัดไป
 
