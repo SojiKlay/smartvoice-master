@@ -1,5 +1,42 @@
 # SmartVoice — สถานะสำหรับพัฒนาต่อ
 
+## สถานะล่าสุด — Phase 5: Pilot Validation Passed (16 พฤศจิกายน 2026)
+
+เป้าหมายปัจจุบันคือ **Limited Pilot สำหรับพนักงานกลุ่มเล็ก** ไม่ใช่ Production Ready งาน Phase 5 (Multi-user, Authentication, RBAC และ Session Management) ที่ commit `c0ed6c6` Deploy บน AWS สำเร็จแล้ว
+
+### ผลทดสอบบน AWS ที่ผู้ใช้ยืนยัน
+
+- HTTPS Health Check ได้ HTTP 200
+- SmartVoice, Caddy, PostgreSQL และ Backup Timer ทำงานอยู่
+- Admin และ Agent Login ผ่าน
+- เปิดใช้งานพร้อมกัน 2 Sessions ผ่านเบื้องต้น
+- บัญชี Disabled ถูกปฏิเสธ Login และ Session เดิมกลับหน้า Login ตามการทดสอบ
+- การเปลี่ยน Agent → Supervisor และ Supervisor → Agent มีผลเมื่อ Streamlit Rerun
+
+ผล AWS ข้างต้นเป็นผลทดสอบที่ผู้ใช้รายงานยืนยัน ไม่ใช่การเชื่อมต่อหรือตรวจ AWS ซ้ำในรอบอัปเดตเอกสารนี้ และไม่ใช่หลักฐานว่าทุกกรณีของระบบผ่านการทดสอบแล้ว
+
+### ผล Automated Tests และข้อจำกัด
+
+- SQLite Regression Tests เฉพาะ `tests/test_auth.py` และ `tests/test_login_page.py`: **59/59 passed, 0 failed** ใช้ฐานข้อมูลทดสอบแยกจาก Production
+- **PostgreSQL Automated Integration Tests สำหรับ Phase 5 ยังไม่ได้รัน** ผล PostgreSQL ของงานก่อนหน้าที่บันทึกในประวัติด้านล่างไม่ยืนยัน Session Revalidation รุ่นนี้
+- การใช้งานพร้อมกัน 2 Sessions เป็นการตรวจเบื้องต้น ยังไม่ใช่ load/stress test หรือการรับรองจำนวนผู้ใช้สูงสุด
+- การตรวจ Role/Account จาก DB ซ้ำช่วยป้องกันสิทธิ์ค้าง แต่ยังไม่ได้วัดผลกระทบต่อ latency และจำนวน connections เมื่อมีผู้ใช้มากขึ้น
+- Backup Timer ทำงานอยู่ไม่ได้ยืนยันว่า backup ทุกรอบหรือ restore ของ release นี้ผ่านแล้ว ต้องตรวจผล backup และคงแผนซ้อมกู้คืน
+- AI/STT ยังต้องปรับปรุงคุณภาพ ไม่ถือว่าผลผ่านด้าน Login/RBAC รับรองความถูกต้องของ transcript หรือผลวิเคราะห์ AI
+
+### งานถัดไป — Phase 6 (ยังไม่ได้เริ่ม)
+
+กำหนด **Phase 6 เป็นงานถัดไป** โดยต้องตกลงขอบเขตและเกณฑ์ตรวจรับก่อน implementation ให้สอดคล้องกับเป้าหมาย Limited Pilot และรักษา Architecture/Security Fixes เดิม
+
+งานที่ยังเหลือสำหรับวางแผนรอบถัดไป: PostgreSQL automated integration ของ Phase 5 บนฐานทดสอบแยก, การติดตามปัญหา/ประสิทธิภาพในการใช้พร้อมกัน, การยืนยัน backup/restore และการประเมินปรับปรุงคุณภาพ AI/STT การระบุรายการนี้ไม่ถือว่าเริ่มทำหรืออนุมัติ deploy/เรียก API จริงแล้ว
+
+รอบนี้แก้เฉพาะเอกสารสถานะ ไม่ทำงาน Phase 6 ไม่แก้ source/tests และไม่ Commit, Push, Deploy หรือเชื่อม AWS/Production DB
+
+## ประวัติสถานะก่อน Phase 5
+
+ข้อความและคำสั่งส่งต่อด้านล่างเป็นประวัติ ณ วันที่บันทึก ไม่ใช่สถานะหรือคำสั่งให้เริ่มงานปัจจุบัน หากขัดกับส่วนล่าสุด ให้ยึดสถานะ Phase 5 ด้านบน โดยเฉพาะข้อความเดิมที่ระบุว่ายังไม่ Deploy หรือยังไม่มี PostgreSQL บน AWS
+
+
 ## T2 fixes และ PostgreSQL compatibility — 15 พฤศจิกายน 2026
 
 งานใน branch `codex/aws-pilot-high-fixes` แยกจาก GitHub master `3e549ed` ผู้ใช้อนุมัติ commit/push เพื่อส่งต่อแล้ว โดยยังไม่อนุมัติ merge/deploy และไม่แก้ `.env` หรือ runtime data เดิม ผู้ใช้รายงานว่าเวอร์ชันก่อนเปิดเว็บ/login บน EC2 และทดลอง API ได้แล้ว; งานนี้ไม่ได้เข้าตรวจ EC2 หรือเรียก API จริง ผล push และ commit SHA ให้ตรวจจาก GitHub branch โดยตรง
@@ -13,7 +50,7 @@
 - รัน business-rule tests เดิมจาก test_db/auth/case_workflow/sales_orders/audit บน PostgreSQL เพิ่ม: **197 passed, 6 deselected in 83.09s** รายการที่แยกออกตรวจ schema/PRAGMA/migration ของ SQLite โดยเฉพาะและผ่านแล้วใน full suite ไม่ได้ลบหรือลด assertions ของ tests เดิม
 - ยังต้องยืนยันบน EC2: Ubuntu/systemd/Caddy, ownership หลังอัปเดตจริง, TLS/SG/IAM, pg_dump version ให้ตรง server, disk space, backup timer และ restore บน target ก่อนรับมอบ ดู runbook PostgreSQL ใน `deploy/aws-ec2/README.md` ไม่ถือว่าการทดสอบ Windows นี้รับรอง production
 
-ข้อความสถานะก่อนหน้านี้ด้านล่างเป็นประวัติ ณ เวลานั้น ให้ใช้ส่วนนี้สำหรับสถานะ implementation ล่าสุด
+ข้อความในส่วน T2 นี้เป็นประวัติ ณ 15 พฤศจิกายน 2026; สถานะล่าสุดให้ใช้ส่วน Phase 5 ด้านบน
 
 ### ส่งต่อให้ ChatGPT web / ผู้พัฒนาถัดไป
 
@@ -55,7 +92,7 @@
 
 ## Cloud migration handover — 15 พฤศจิกายน 2026
 
-**Current phase: Phase 4 — PostgreSQL Migration Design (Planned / Not Implemented).** อ่าน [แผนส่งต่อฉบับเต็ม](docs/cloud_migration_plan.md) และ [architecture ปัจจุบัน](docs/architecture.md) ก่อนพัฒนาต่อ หมายเลข Phase เป็นหมวดงาน ไม่ใช่หลักฐานว่า Phase 1–3 เสร็จทั้งหมด
+**สถานะ ณ รอบ handover เดิม: Phase 4 — PostgreSQL Migration Design (Planned / Not Implemented).** อ่าน [แผนส่งต่อฉบับเต็ม](docs/cloud_migration_plan.md) และ [architecture ปัจจุบัน](docs/architecture.md) ก่อนพัฒนาต่อ หมายเลข Phase เป็นหมวดงาน ไม่ใช่หลักฐานว่า Phase 1–3 เสร็จทั้งหมด
 
 - ก่อนเริ่มเอกสาร: working tree สะอาด, branch `master`, local HEAD และ GitHub HEAD/master ตรงกันที่ `0c66644077e2d2e5fc930167a4116278d4eaa8d4`; ตรวจ remote ด้วย `git ls-remote origin HEAD refs/heads/master` สำเร็จ
 - API-only migration อยู่ใน source แล้ว: pyannoteAI + Typhoon; SQLite 9 application tables, local runtime storage และ process-local background threads ยังอยู่ ไม่ได้เพิ่ม PostgreSQL หรือแก้ application code ในงานส่งต่อ
@@ -90,7 +127,7 @@ $env:TMP=$env:TEMP
 
 ข้อความ API-only ด้านล่างเป็นรายงานรอบ implementation ก่อน handover; ส่วน Local รุ่นเก่าถูกเก็บไว้เป็นประวัติ
 
-## สถานะปัจจุบัน — API เท่านั้น (15 พฤศจิกายน 2026)
+## ประวัติสถานะ — API เท่านั้น (15 พฤศจิกายน 2026)
 
 ตามคำสั่ง PM ถอดการรันโมเดล AI Local ออก: Whisper/Pyannote บนเครื่อง, Ollama transport, GPU/CUDA helpers และ dependencies ที่เกี่ยวข้อง ตัวติดตั้ง `run.bat`/`run.sh`, `requirements.txt`, `pyproject.toml` ใช้ชุด API เท่านั้น
 
