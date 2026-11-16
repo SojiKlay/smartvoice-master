@@ -10,23 +10,27 @@ from unittest import mock
 import pytest
 from streamlit.testing.v1 import AppTest
 
-from smartvoice import audit
+from smartvoice import audit, auth
 from smartvoice import dashboard_common as dc
 from smartvoice import db, file_manager, labels
 
 
 @pytest.fixture
 def temp_db(tmp_path, monkeypatch):
+    monkeypatch.delenv("DATABASE_URL", raising=False)
     monkeypatch.setenv("DB_PATH", str(tmp_path / "smartvoice.db"))
     db.init_db()
     return tmp_path
 
 
 def _signed_in(at: AppTest, role: str = "Admin") -> AppTest:
+    user_id, error = auth.create_user("tester", "synthetic-password", role, "ทดสอบ")
+    assert user_id is not None and error is None
     at.session_state["current_user"] = "ทดสอบ"
     at.session_state["current_user_role"] = role
     at.session_state["current_username"] = "tester"
-    at.session_state["current_user_id"] = None
+    at.session_state["current_user_id"] = user_id
+    at.session_state["current_user_source"] = "db"
     return at
 
 

@@ -9,11 +9,12 @@ import pandas as pd
 import pytest
 from streamlit.testing.v1 import AppTest
 
-from smartvoice import audit, customer_entry, db, file_manager, labels, sales_orders as so
+from smartvoice import audit, auth, customer_entry, db, file_manager, labels, sales_orders as so
 
 
 @pytest.fixture()
 def tmp_db(tmp_path, monkeypatch):
+    monkeypatch.delenv("DATABASE_URL", raising=False)
     monkeypatch.setenv("DB_PATH", str(tmp_path / "so.db"))
     db.init_db()
     return tmp_path
@@ -374,10 +375,13 @@ def test_save_proof_file_checks_content_and_dedups(tmp_path, monkeypatch):
 # ── Pages ────────────────────────────────────────────────────────────────
 
 def _signed_in(at: AppTest, role: str) -> AppTest:
+    user_id, error = auth.create_user("tester", "synthetic-password", role, "ทดสอบ")
+    assert user_id is not None and error is None
     at.session_state["current_user"] = "ทดสอบ"
     at.session_state["current_user_role"] = role
     at.session_state["current_username"] = "tester"
-    at.session_state["current_user_id"] = None
+    at.session_state["current_user_id"] = user_id
+    at.session_state["current_user_source"] = "db"
     return at
 
 

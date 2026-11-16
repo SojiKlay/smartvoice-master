@@ -6,7 +6,7 @@ import pytest
 import requests
 from streamlit.testing.v1 import AppTest
 
-from smartvoice import audit, config, db, env_settings, file_manager, ollama_client, preflight, processing_control
+from smartvoice import audit, auth, config, db, env_settings, file_manager, ollama_client, preflight, processing_control
 from smartvoice.stt import orchestrator
 
 
@@ -176,6 +176,7 @@ def test_cancellation_prevents_audio_upload(api_env, monkeypatch, tmp_path):
 
 @pytest.mark.parametrize("legacy", [False, True])
 def test_settings_saves_api_choices_without_exposing_keys(api_env, monkeypatch, tmp_path, legacy):
+    monkeypatch.delenv("DATABASE_URL", raising=False)
     monkeypatch.setenv("DB_PATH", str(tmp_path / "test.db"))
     db.init_db()
     values = {"STT_PROVIDER": "pyannote_api", "LLM_PROVIDER": "typhoon", "TYPHOON_MODEL": "typhoon-v2.1-12b-instruct"}
@@ -188,10 +189,13 @@ def test_settings_saves_api_choices_without_exposing_keys(api_env, monkeypatch, 
     monkeypatch.setattr(env_settings, "write_env", save)
     monkeypatch.setattr(preflight, "run_preflight_checks", lambda: [])
     app = AppTest.from_file(str(Path("pages/4_Settings.py").resolve()))
+    user_id, error = auth.create_user("tester", "synthetic-password", "Admin", "Tester")
+    assert user_id is not None and error is None
     app.session_state["current_user"] = "Tester"
     app.session_state["current_user_role"] = "Admin"
     app.session_state["current_username"] = "tester"
-    app.session_state["current_user_id"] = None
+    app.session_state["current_user_id"] = user_id
+    app.session_state["current_user_source"] = "db"
     app.run(timeout=20)
     assert not app.exception
     app.text_input(key="_api_secret_TYPHOON_API_KEY").set_value("new-secret")
