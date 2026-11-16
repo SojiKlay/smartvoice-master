@@ -1,8 +1,10 @@
 import io
 import json
 import socket
+import sqlite3
 import wave
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
@@ -234,7 +236,8 @@ def test_missing_speech_key_prevents_upload(api_env, monkeypatch, tmp_path):
     post.assert_not_called()
 
 
-def test_synthetic_audio_to_dashboard_queries(api_env, monkeypatch, tmp_path):
+@pytest.fixture
+def synthetic_pipeline(api_env, monkeypatch, tmp_path):
     monkeypatch.delenv("DATABASE_URL", raising=False)
     monkeypatch.setenv("PYTHON_DOTENV_DISABLED", "1")
     monkeypatch.setenv("DB_PATH", str(tmp_path / "integration.db"))
@@ -309,6 +312,25 @@ def test_synthetic_audio_to_dashboard_queries(api_env, monkeypatch, tmp_path):
     monkeypatch.setattr(requests, "post", post_mock)
     monkeypatch.setattr(requests, "put", put_mock)
     monkeypatch.setattr(requests, "get", get_mock)
+    return SimpleNamespace(
+        call_id=call_id, path=path, digest=digest, agent=agent, customer=customer,
+        summary=summary, answers=answers, seen=seen, post_mock=post_mock,
+        put_mock=put_mock, get_mock=get_mock, blocked=blocked,
+    )
+
+
+def test_synthetic_audio_to_dashboard_queries(synthetic_pipeline):
+    call_id = synthetic_pipeline.call_id
+    summary = synthetic_pipeline.summary
+    customer = synthetic_pipeline.customer
+    agent = synthetic_pipeline.agent
+    digest = synthetic_pipeline.digest
+    seen = synthetic_pipeline.seen
+    answers = synthetic_pipeline.answers
+    post_mock = synthetic_pipeline.post_mock
+    put_mock = synthetic_pipeline.put_mock
+    get_mock = synthetic_pipeline.get_mock
+    blocked = synthetic_pipeline.blocked
     statuses = []
     result = pipeline.process_call(call_id, step_callback=lambda step: statuses.append(db.get_call_by_id(call_id)["status"]))
     saved = db.get_call_by_id(call_id)
@@ -330,3 +352,93 @@ def test_synthetic_audio_to_dashboard_queries(api_env, monkeypatch, tmp_path):
     assert put_mock.call_count == get_mock.call_count == 1
     assert post_mock.call_count == len(seen) + 2
     blocked.assert_not_called()
+
+
+@pytest.mark.parametrize("failure", ["stt_timeout", "stt_http", "llm_timeout", "llm_http", "invalid_json", "truncated", "empty"])
+def test_pipeline_api_failure_keeps_audio_and_hides_incomplete_results(synthetic_pipeline, failure):
+    run = synthetic_pipeline
+    attempts = []
+    if failure.startswith("stt_"):
+        def fail_poll(url, **kwargs):
+            attempts.append(url)
+            if failure == "stt_timeout":
+                raise requests.Timeout("synthetic timeout")
+            return response({}, status=503)
+        run.get_mock.side_effect = fail_poll
+    else:
+        original_post = run.post_mock.side_effect
+
+        def fail_analysis(url, **kwargs):
+            if url == "https://api.opentyphoon.ai/v1/chat/completions" and kwargs["json"]["messages"][0]["content"] == prompts.ANOMALY_SYSTEM:
+                attempts.append(url)
+                if failure == "llm_timeout":
+                    raise requests.Timeout("synthetic timeout")
+                if failure == "llm_http":
+                    return response({}, status=429)
+                content = "not JSON" if failure == "invalid_json" else "{}" if failure == "truncated" else ""
+                return response({"choices": [{"message": {"content": content}, "finish_reason": "length" if failure == "truncated" else "stop"}]})
+            return original_post(url, **kwargs)
+        run.post_mock.side_effect = fail_analysis
+    with pytest.raises(RuntimeError):
+        pipeline.process_call(run.call_id)
+    saved = db.get_call_by_id(run.call_id)
+    assert len(attempts) == 1
+    assert saved["status"] == "error" and saved["error_msg"]
+    assert saved["transcript"] is None and saved["summary"] is None
+    assert saved["case_id"] is None
+    assert db.get_done_calls() == [] and db.count_done_calls() == 0
+    assert Path(run.path).is_file()
+    assert file_manager.compute_file_hash(Path(run.path).read_bytes()) == run.digest
+    checkpoint = json.loads(Path(run.path + ".smartvoice-api.json").read_text(encoding="utf-8"))
+    assert checkpoint["job_id"] == "synthetic-job"
+    assert ("output" in checkpoint) == (not failure.startswith("stt_"))
+    if not failure.startswith("stt_"):
+        assert prompts.EXTRACTION_SYSTEM in run.seen
+        assert prompts.NEXT_ACTION_SYSTEM in run.seen
+    run.blocked.assert_not_called()
+
+
+def test_pipeline_result_write_failure_rolls_back_and_sets_error(synthetic_pipeline, monkeypatch):
+    run = synthetic_pipeline
+    original_save = db.update_call_results
+
+    def fail_save(**kwargs):
+        kwargs["sentiment"] = "invalid-synthetic-sentiment"
+        original_save(**kwargs)
+
+    assign = Mock(wraps=pipeline._auto_assign_case)
+    monkeypatch.setattr(db, "update_call_results", fail_save)
+    monkeypatch.setattr(pipeline, "_auto_assign_case", assign)
+    with pytest.raises(sqlite3.IntegrityError):
+        pipeline.process_call(run.call_id)
+    saved = db.get_call_by_id(run.call_id)
+    assert saved["status"] == "error" and "IntegrityError" in saved["error_msg"]
+    assert saved["summary"] is None and saved["transcript"] is None
+    assert db.get_done_calls() == []
+    assert Path(run.path).is_file()
+    assert "output" in json.loads(Path(run.path + ".smartvoice-api.json").read_text(encoding="utf-8"))
+    assign.assert_not_called()
+    run.blocked.assert_not_called()
+
+
+def test_case_link_failure_preserves_done_analysis_and_unlinked_case(synthetic_pipeline, monkeypatch):
+    run = synthetic_pipeline
+    customer_id = db.insert_customer("Synthetic", "Customer")
+    db.link_call_customer(run.call_id, customer_id)
+    failed_link = Mock(side_effect=sqlite3.OperationalError("synthetic case link failure"))
+    logged = Mock()
+    monkeypatch.setattr(db, "assign_call_to_case", failed_link)
+    monkeypatch.setattr(pipeline.log, "error", logged)
+    result = pipeline.process_call(run.call_id)
+    saved = db.get_call_by_id(run.call_id)
+    assert saved["status"] == "done" and saved["error_msg"] is None
+    assert saved["summary"] == result["summary"] == run.summary
+    assert saved["transcript"] and saved["case_id"] is None
+    assert db.get_done_calls() == [saved]
+    cases = db.get_cases_by_customer(customer_id)
+    assert len(cases) == 1
+    failed_link.assert_called_once_with(run.call_id, cases[0]["id"])
+    assert db.get_calls_by_case(cases[0]["id"]) == []
+    assert db.get_call_customer_link(run.call_id)["customer_id"] == customer_id
+    logged.assert_called_once_with("_auto_assign_case failed for call_id=%s (%s)", run.call_id, "OperationalError")
+    run.blocked.assert_not_called()
