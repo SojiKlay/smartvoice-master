@@ -1,4 +1,7 @@
+import io
 import json
+import socket
+import wave
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -6,7 +9,7 @@ import pytest
 import requests
 from streamlit.testing.v1 import AppTest
 
-from smartvoice import audit, auth, config, db, env_settings, file_manager, ollama_client, preflight, processing_control
+from smartvoice import audit, auth, config, db, env_settings, file_manager, ollama_client, pipeline, preflight, processing_control, prompts
 from smartvoice.stt import orchestrator
 
 
@@ -229,3 +232,101 @@ def test_missing_speech_key_prevents_upload(api_env, monkeypatch, tmp_path):
     with pytest.raises(ValueError, match="PYANNOTE_API_KEY"):
         orchestrator.transcribe_diarized(str(tmp_path / "unused.wav"))
     post.assert_not_called()
+
+
+def test_synthetic_audio_to_dashboard_queries(api_env, monkeypatch, tmp_path):
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.setenv("PYTHON_DOTENV_DISABLED", "1")
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "integration.db"))
+    monkeypatch.setenv("PYANNOTE_API_MODEL", "precision-2")
+    monkeypatch.setenv("STT_API_MODEL", "faster-whisper-large-v3-turbo")
+    monkeypatch.setattr(file_manager, "AUDIO_DIR", str(tmp_path / "audio"))
+    blocked = Mock(side_effect=AssertionError("Unexpected network call"))
+    monkeypatch.setattr(socket.socket, "connect", blocked)
+    monkeypatch.setattr(socket, "getaddrinfo", blocked)
+    monkeypatch.setattr(requests.sessions.Session, "request", blocked)
+    processing_control.clear_run()
+    db.init_db()
+    audio = io.BytesIO()
+    with wave.open(audio, "wb") as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(8000)
+        wav.writeframes(b"\x00\x00" * 80000)
+    payload = audio.getvalue()
+    filename = file_manager.sanitize_filename("synthetic-call.wav")
+    assert file_manager.validate_upload(payload, filename) == (True, "")
+    digest = file_manager.compute_file_hash(payload)
+    assert db.get_call_by_hash(digest) is None
+    path = file_manager.save_audio_file(payload, filename, digest)
+    call_id = db.insert_call(filename, digest, path)
+    assert Path(path).read_bytes() == payload
+    assert db.get_call_by_id(call_id)["status"] == "uploaded"
+    assert db.get_done_calls() == []
+    agent = "สวัสดีค่ะ คุณลูกค้าสอบถามข้อมูลสินค้าได้ค่ะ"
+    customer = "อยากสอบถามวัสดุของที่นอนค่ะ"
+    turns = [
+        {"speaker": "SPEAKER_00", "text": agent, "start": 0.0, "end": 4.0},
+        {"speaker": "SPEAKER_01", "text": customer, "start": 5.0, "end": 9.0},
+    ]
+    summary = "ลูกค้าสอบถามวัสดุของที่นอน"
+    answers = {
+        prompts.TRANSCRIPT_CLEANUP_SYSTEM: f"[0] Agent: {agent}\n[1] Customer: {customer}",
+        prompts.SPEAKER_CORRECTION_SYSTEM: [{"idx": 0, "speaker": "Agent"}, {"idx": 1, "speaker": "Customer"}],
+        prompts.EXTRACTION_SYSTEM: {"summary": summary, "topic": "สอบถามข้อมูลสินค้า", "keywords": ["วัสดุ", "ที่นอน"]},
+        prompts.SENTIMENT_SYSTEM: {"sentiment": "neutral", "customer_quote": customer, "sentiment_reason": "สอบถามข้อมูล"},
+        prompts.AGENT_QA_SYSTEM: {"found": [{"item": "P1", "quote": agent}], "customer_had_problem": False},
+        prompts.NEXT_ACTION_SYSTEM: {"pending": False},
+        prompts.ANOMALY_SYSTEM: {"anomaly_detected": False},
+    }
+    seen = []
+
+    def post(url, **kwargs):
+        if url == "https://api.pyannote.ai/v1/media/input":
+            return response({"url": "https://storage.example/synthetic-upload"})
+        if url == "https://api.pyannote.ai/v1/diarize":
+            assert kwargs["json"]["transcription"] is True
+            return response({"jobId": "synthetic-job"})
+        assert url == "https://api.opentyphoon.ai/v1/chat/completions"
+        messages = kwargs["json"]["messages"]
+        system = messages[0]["content"]
+        assert customer in messages[1]["content"]
+        answer = answers[system]
+        seen.append(system)
+        content = answer if isinstance(answer, str) else json.dumps(answer, ensure_ascii=False)
+        return response({"choices": [{"message": {"content": content}, "finish_reason": "stop"}]})
+
+    def put(url, **kwargs):
+        assert url == "https://storage.example/synthetic-upload"
+        assert kwargs["data"].read() == payload
+        return response({})
+
+    def get(url, **kwargs):
+        assert url == "https://api.pyannote.ai/v1/jobs/synthetic-job"
+        return response({"status": "succeeded", "output": {"turnLevelTranscription": turns}})
+
+    post_mock, put_mock, get_mock = Mock(side_effect=post), Mock(side_effect=put), Mock(side_effect=get)
+    monkeypatch.setattr(requests, "post", post_mock)
+    monkeypatch.setattr(requests, "put", put_mock)
+    monkeypatch.setattr(requests, "get", get_mock)
+    statuses = []
+    result = pipeline.process_call(call_id, step_callback=lambda step: statuses.append(db.get_call_by_id(call_id)["status"]))
+    saved = db.get_call_by_id(call_id)
+    assert statuses[0] == "processing" and statuses[-1] == "done"
+    assert saved["status"] == "done" and saved["error_msg"] is None
+    assert saved["summary"] == result["summary"] == summary
+    assert saved["topic"] == "สอบถามข้อมูลสินค้า"
+    assert saved["sentiment"] == "neutral"
+    assert saved["anomaly_detected"] == 0
+    assert f"Customer: {customer}" in saved["transcript"]
+    assert f"Agent: {agent}" in saved["transcript"]
+    assert json.loads(saved["keywords"]) == ["วัสดุ", "ที่นอน"]
+    performance = json.loads(saved["agent_performance"])
+    assert performance["overall_score"] == performance["politeness"] + performance["problem_solving"]
+    assert db.count_done_calls() == 1
+    assert db.get_done_calls(limit=1000) == [saved]
+    assert db.get_call_by_hash(digest)["id"] == call_id
+    assert set(seen) == set(answers)
+    assert put_mock.call_count == get_mock.call_count == 1
+    assert post_mock.call_count == len(seen) + 2
+    blocked.assert_not_called()
