@@ -439,3 +439,20 @@ erDiagram
 | `keywords` | `["ที่นอน", "ส่งล่าช้า"]` |
 | `brand_mentions` | `["Restonic"]` |
 | `platform_mentions` | `["Shopee"]` |
+
+
+## Case Linking — Schema v2 (Milestone A)
+
+`calls.status = done` หมายถึงวิเคราะห์สำเร็จ ไม่รับรองว่าจัดเคสสำเร็จ เพิ่ม `case_link_status` (`pending`, `linked`, `failed`, `not_required` หรือ NULL ก่อนวิเคราะห์), `case_link_plan` (JSON), `case_link_error` (รหัสข้อผิดพลาดเท่านั้น), `case_link_updated_at` (UTC) โดยไม่ใช้ `error_msg` สำหรับการจัดเคส
+
+Plan รับเฉพาะ `{"action":"create","customer_id":123}` หรือ `{"action":"link","customer_id":123,"case_id":456}` ไม่เก็บ transcript, summary, credentials หรือชื่อ/เบอร์ลูกค้า หัวข้อเคสใหม่ใช้ topic ที่บันทึกแล้วหรือเรื่องทั่วไป โดยไม่คัดลอก summary/หัวข้ออิสระจาก LLM ลง plan การเลือกเคสยังใช้ recency/LLM เดิม แต่ไม่เสนอ orphan เดิมให้จับคู่อัตโนมัติ
+
+SQLite เพิ่ม columns และ backfill ใน transaction ของ init_db; PostgreSQL ใช้ migrations/002_case_linking.sql ผ่าน runner v1→v2 (fresh install รัน 001 แล้ว 002) ภายใต้ advisory transaction lock ต้อง migrate ก่อนเริ่มเว็บ การนำเข้า SQLite→PostgreSQL ยังตรวจ column parity จึงต้องอัปเกรดสำเนา SQLite ก่อนนำเข้า
+
+Backfill เฉพาะ done: case ที่ตรงกับลูกค้า active คนเดียวเป็น linked; ไม่มีทั้ง case และ customer link เป็น not_required; กรณีอื่นเป็น pending เพื่อทบทวน ไม่สร้าง/ลบ/จับคู่เคส ไม่มีแผนให้ records เก่าโดยอัตโนมัติ การรัน migration ซ้ำไม่ reset สถานะหรือแผน
+
+`case_workflow.retry_case_link(call_id)` เป็น backend operation ที่ไม่เรียก AI ใช้แผนบันทึกแล้วและตรวจสถานะ done, ลูกค้า, case เป้าหมายอีกครั้ง SQLite ใช้ BEGIN IMMEDIATE; PostgreSQL ล็อก call→customer→case ด้วย FOR UPDATE การสร้างเคส/อัปเดตเคส/เชื่อมสาย/ตั้ง linked อยู่ใน transaction เดียวกัน Retry สายเดียวกันซ้ำหรือพร้อมกันไม่สร้างเคสซ้ำ แผนหาย/ผิดรูปแบบ/เป้าหมายเปลี่ยนต้อง failed ไม่เลือกเคสใหม่เอง ห้ามอ้างว่าป้องกันเคสหัวข้อเดียวกันข้ามหลายสายได้
+
+เมื่อ write ล้มเหลว rollback แล้วบันทึก write_failed แยกโดยไม่ทับ linked หาก DB ใช้ไม่ได้ทั้งหมด backend คืน failed และสถานะ durable อาจยัง pending ต้องตรวจซ้ำเมื่อ DB กลับมา UI warning, สิทธิ์ปุ่ม retry, audit การกด retry และการยืนยันแผนใหม่เป็นงาน Milestone B
+
+Migration เป็น additive แต่โค้ด PostgreSQL เดิมยอมรับ schema version 1 เท่านั้น ห้าม downgrade version marker เพื่อหลบการตรวจ ควรหยุด writes/สำรองก่อน migration และใช้ forward fix หรือ restore snapshot ภายใต้แผนรักษาข้อมูลหลังอัปเกรด ไม่ลบ columns/ข้อมูลเพื่อ rollback อัตโนมัติ

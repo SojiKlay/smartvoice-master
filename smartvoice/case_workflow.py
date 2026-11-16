@@ -246,3 +246,7 @@ def case_brief(calls: list[dict]) -> dict:
     elif brief["anomalies"] or brief["sentiment"] == "negative":
         brief["priority"], brief["priority_rank"] = PRIORITY_HIGH, 1
     return brief
+
+
+def retry_case_link(call_id: int) -> str:
+    return db.retry_case_link(call_id)

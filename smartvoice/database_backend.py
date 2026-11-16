@@ -9,7 +9,7 @@ except ImportError:
     psycopg = None
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 _SQL_LITERAL = re.compile(r"('(?:''|[^'])*'|\"(?:\"\"|[^\"])*\"|--[^\n]*|/\*.*?\*/)", re.S)
 
 
@@ -87,6 +87,8 @@ class Connection:
     def __exit__(self, kind, value, traceback):
         try:
             return self._transaction.__exit__(kind, value, traceback)
+        except psycopg.Error:
+            raise sqlite3.OperationalError("PostgreSQL transaction failed") from None
         finally:
             self._transaction = None
             self.close()
@@ -119,10 +121,15 @@ def migrate(url=None):
         connection.raw.execute("SELECT pg_advisory_xact_lock(724613001)")
         connection.raw.execute("CREATE TABLE IF NOT EXISTS smartvoice_schema_version (version INTEGER PRIMARY KEY)")
         row = connection.raw.execute("SELECT version FROM smartvoice_schema_version").fetchone()
-        if row:
-            if row[0] != SCHEMA_VERSION:
-                raise sqlite3.OperationalError("Unsupported PostgreSQL schema version")
-            return
-        schema = Path(__file__).resolve().parent.parent / "migrations" / "001_postgresql.sql"
-        connection.raw.execute(schema.read_text(encoding="utf-8"))
-        connection.raw.execute("INSERT INTO smartvoice_schema_version VALUES (%s)", (SCHEMA_VERSION,))
+        version = row[0] if row else 0
+        if version not in (0, 1, SCHEMA_VERSION):
+            raise sqlite3.OperationalError("Unsupported PostgreSQL schema version")
+        directory = Path(__file__).resolve().parent.parent / "migrations"
+        if version == 0:
+            connection.raw.execute((directory / "001_postgresql.sql").read_text(encoding="utf-8"))
+        if version < 2:
+            connection.raw.execute((directory / "002_case_linking.sql").read_text(encoding="utf-8"))
+            if row:
+                connection.raw.execute("UPDATE smartvoice_schema_version SET version = %s", (SCHEMA_VERSION,))
+            else:
+                connection.raw.execute("INSERT INTO smartvoice_schema_version VALUES (%s)", (SCHEMA_VERSION,))

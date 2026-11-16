@@ -1267,6 +1267,12 @@ def _auto_assign_case(call_id: int, analysis: dict) -> None:
       3. **New case** — if no match, create a new case.
     """
     try:
+        call = db.get_call_by_id(call_id)
+        if not call or call["status"] != "done":
+            raise ValueError("analysis_not_done")
+        if call["case_id"] is not None or call["case_link_plan"] is not None or call["case_link_status"] == "failed":
+            db.retry_case_link(call_id)
+            return
         link = db.get_call_customer_link(call_id)
         if not link:
             return  # No customer linked — skip case assignment
@@ -1275,13 +1281,12 @@ def _auto_assign_case(call_id: int, analysis: dict) -> None:
         new_topic = analysis.get("topic", "")
         new_summary = analysis.get("summary", "")
 
-        open_cases = db.get_open_cases_by_customer(customer_id)
+        open_cases = [case for case in db.get_open_cases_by_customer(customer_id) if case.get("call_ids")]
 
         # No open cases → create one directly (no LLM needed)
         if not open_cases:
-            subject = new_topic or new_summary[:60] or "เรื่องทั่วไป"
-            case_id = db.create_case(customer_id, subject)
-            db.assign_call_to_case(call_id, case_id)
+            db.save_case_link_plan(call_id, {"action": "create", "customer_id": customer_id})
+            db.retry_case_link(call_id)
             return
 
         # Enrich cases with: (a) call summaries for LLM context
@@ -1314,8 +1319,8 @@ def _auto_assign_case(call_id: int, analysis: dict) -> None:
                         "(same customer, %.1f min since last call)",
                         call_id, cs["id"], gap / 60.0,
                     )
-                    db.assign_call_to_case(call_id, cs["id"])
-                    db.update_case_status(cs["id"], "follow_up")
+                    db.save_case_link_plan(call_id, {"action": "link", "customer_id": customer_id, "case_id": cs["id"]})
+                    db.retry_case_link(call_id)
                     return
 
         # (2) LLM matching — for cases older than the recency window
@@ -1326,17 +1331,21 @@ def _auto_assign_case(call_id: int, analysis: dict) -> None:
         matched_id = result.get("match_case_id")
         valid_ids = {cs["id"] for cs in open_cases}
         if matched_id and matched_id in valid_ids:
-            db.assign_call_to_case(call_id, matched_id)
-            db.update_case_status(matched_id, "follow_up")
+            db.save_case_link_plan(call_id, {"action": "link", "customer_id": customer_id, "case_id": matched_id})
+            db.retry_case_link(call_id)
             return
 
         # (3) New case
-        subject = result.get("suggested_subject") or new_topic or "เรื่องทั่วไป"
-        case_id = db.create_case(customer_id, subject)
-        db.assign_call_to_case(call_id, case_id)
+        db.save_case_link_plan(call_id, {"action": "create", "customer_id": customer_id})
+        db.retry_case_link(call_id)
     except Exception as exc:
         # Case assignment is non-critical — log but don't break the pipeline
         log.error("_auto_assign_case failed for call_id=%s (%s)", call_id, type(exc).__name__)
+
+        try:
+            db.record_case_link_failure(call_id)
+        except Exception:
+            log.error("Could not persist case linking failure for call_id=%s", call_id)
 
 
 def process_call(call_id: int, step_callback=None) -> dict:

@@ -421,24 +421,28 @@ def test_pipeline_result_write_failure_rolls_back_and_sets_error(synthetic_pipel
     run.blocked.assert_not_called()
 
 
-def test_case_link_failure_preserves_done_analysis_and_unlinked_case(synthetic_pipeline, monkeypatch):
+def test_case_link_failure_preserves_analysis_and_rolls_back_new_case(synthetic_pipeline):
     run = synthetic_pipeline
     customer_id = db.insert_customer("Synthetic", "Customer")
     db.link_call_customer(run.call_id, customer_id)
-    failed_link = Mock(side_effect=sqlite3.OperationalError("synthetic case link failure"))
-    logged = Mock()
-    monkeypatch.setattr(db, "assign_call_to_case", failed_link)
-    monkeypatch.setattr(pipeline.log, "error", logged)
+    with db.get_connection() as conn:
+        conn.execute("CREATE TRIGGER fail_case_link BEFORE UPDATE OF case_id ON calls BEGIN SELECT RAISE(ABORT, 'synthetic failure'); END")
     result = pipeline.process_call(run.call_id)
     saved = db.get_call_by_id(run.call_id)
     assert saved["status"] == "done" and saved["error_msg"] is None
     assert saved["summary"] == result["summary"] == run.summary
     assert saved["transcript"] and saved["case_id"] is None
+    assert saved["case_link_status"] == "failed"
+    assert saved["case_link_error"] == "write_failed"
+    assert json.loads(saved["case_link_plan"]) == {"action": "create", "customer_id": customer_id}
     assert db.get_done_calls() == [saved]
-    cases = db.get_cases_by_customer(customer_id)
-    assert len(cases) == 1
-    failed_link.assert_called_once_with(run.call_id, cases[0]["id"])
-    assert db.get_calls_by_case(cases[0]["id"]) == []
+    assert db.get_cases_by_customer(customer_id) == []
     assert db.get_call_customer_link(run.call_id)["customer_id"] == customer_id
-    logged.assert_called_once_with("_auto_assign_case failed for call_id=%s (%s)", run.call_id, "OperationalError")
+    with db.get_connection() as conn:
+        conn.execute("DROP TRIGGER fail_case_link")
+    before = run.post_mock.call_count
+    assert db.retry_case_link(run.call_id) == "linked"
+    assert db.retry_case_link(run.call_id) == "linked"
+    assert run.post_mock.call_count == before
+    assert len(db.get_cases_by_customer(customer_id)) == 1
     run.blocked.assert_not_called()

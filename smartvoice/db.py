@@ -1,6 +1,8 @@
 import json
 import os
 import sqlite3
+from contextlib import contextmanager
+from pathlib import Path
 from datetime import datetime, timedelta, timezone
 
 from smartvoice import database_backend
@@ -37,6 +39,7 @@ def init_db() -> None:
         return
     conn = get_connection()
     with conn:
+        conn.execute("BEGIN IMMEDIATE")
         conn.execute("""
             CREATE TABLE IF NOT EXISTS calls (
                 id                INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -215,6 +218,7 @@ def _migrate(conn: sqlite3.Connection) -> None:
     _migrate_soft_delete(conn)
     _migrate_case_assignment(conn)
     _migrate_warranty_fields(conn)
+    _migrate_case_linking(conn)
 
 
 def _migrate_warranty_fields(conn: sqlite3.Connection) -> None:
@@ -389,7 +393,12 @@ def update_call_results(
                 anomaly_detected = ?, anomaly_reason = ?,
                 sentiment_reason = ?, anomaly_severity = ?,
                 topic_detail = ?,
-                status = 'done', updated_at = ?
+                status = 'done', updated_at = ?,
+                case_link_status = CASE
+                    WHEN case_id IS NOT NULL OR EXISTS (SELECT 1 FROM call_customer_links WHERE call_id = calls.id)
+                    THEN 'pending' ELSE 'not_required' END,
+                case_link_plan = CASE WHEN case_id IS NULL THEN NULL ELSE case_link_plan END,
+                case_link_error = NULL, case_link_updated_at = ?
             WHERE id = ?
             """,
             (
@@ -399,7 +408,7 @@ def update_call_results(
                 int(anomaly_detected), anomaly_reason,
                 sentiment_reason, anomaly_severity,
                 topic_detail,
-                now, call_id,
+                now, now, call_id,
             ),
         )
     conn.close()
@@ -1087,16 +1096,16 @@ def link_call_customer(
     warranty_id: int = None, matched_by: str = "manual",
 ) -> int:
     now = _now()
-    conn = get_connection()
-    with conn:
+    with _locked_case_link(call_id) as (conn, call):
         cur = conn.execute(
             """INSERT INTO call_customer_links
                (call_id, customer_id, warranty_id, matched_by, created_at)
                VALUES (?,?,?,?,?)""",
             (call_id, customer_id, warranty_id, matched_by, now),
         )
-    conn.close()
-    return cur.lastrowid
+        if call["status"] == "done" and call["case_id"] is None:
+            conn.execute("UPDATE calls SET case_link_plan=NULL, case_link_status='pending', case_link_error=NULL, case_link_updated_at=? WHERE id=?", (now, call_id))
+        return cur.lastrowid
 
 
 def get_call_customer_link(call_id: int) -> dict | None:
@@ -1915,3 +1924,134 @@ def _check_admin_removal(conn, user_id, role, active):
     others = conn.execute("SELECT COUNT(*) FROM users WHERE role='Admin' AND is_active=1 AND id<>?", (user_id,)).fetchone()[0]
     if not others:
         raise LastAdminError("At least one active Admin account must remain")
+
+
+def _migrate_case_linking(conn) -> None:
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(calls)").fetchall()}
+    expected = {"case_link_status", "case_link_plan", "case_link_error", "case_link_updated_at"}
+    if expected <= columns:
+        return
+    if expected & columns:
+        raise sqlite3.OperationalError("Incomplete case linking migration")
+    path = Path(__file__).resolve().parent.parent / "migrations" / "002_case_linking.sql"
+    for statement in path.read_text(encoding="utf-8").split(";"):
+        if statement.strip():
+            conn.execute(statement)
+
+
+@contextmanager
+def _locked_case_link(call_id: int):
+    conn = get_connection()
+    try:
+        with conn:
+            if not database_backend.database_url():
+                conn.execute("BEGIN IMMEDIATE")
+            suffix = " FOR UPDATE" if database_backend.database_url() else ""
+            row = conn.execute("SELECT * FROM calls WHERE id = ?" + suffix, (call_id,)).fetchone()
+            if row is None:
+                raise ValueError("call_not_found")
+            yield conn, dict(row)
+    finally:
+        conn.close()
+
+
+def _valid_case_link_plan(plan) -> bool:
+    if not isinstance(plan, dict):
+        return False
+    action = plan.get("action")
+    if not isinstance(action, str):
+        return False
+    keys = {"action", "customer_id"} if action == "create" else {"action", "customer_id", "case_id"}
+    return (
+        action in {"create", "link"} and set(plan) == keys
+        and type(plan.get("customer_id")) is int and plan["customer_id"] > 0
+        and (action == "create" or (type(plan.get("case_id")) is int and plan["case_id"] > 0))
+    )
+
+
+def save_case_link_plan(call_id: int, plan: dict) -> None:
+    if not _valid_case_link_plan(plan):
+        raise ValueError("invalid_plan")
+    with _locked_case_link(call_id) as (conn, call):
+        if call["status"] != "done":
+            raise ValueError("analysis_not_done")
+        if call["case_id"] is not None or call["case_link_plan"] is not None:
+            return
+        conn.execute(
+            "UPDATE calls SET case_link_plan=?, case_link_status='pending', case_link_error=NULL, case_link_updated_at=? WHERE id=?",
+            (json.dumps(plan, sort_keys=True), _now(), call_id),
+        )
+
+
+def record_case_link_failure(call_id: int, code: str = "planning_failed") -> None:
+    if code not in {"planning_failed", "write_failed"}:
+        raise ValueError("invalid_error_code")
+    with _locked_case_link(call_id) as (conn, call):
+        if call["status"] == "done" and call["case_link_status"] in {"pending", "failed"}:
+            _set_case_link_state(conn, call_id, "failed", code)
+
+
+def _set_case_link_state(conn, call_id: int, status: str, error: str | None = None) -> str:
+    conn.execute(
+        "UPDATE calls SET case_link_status=?, case_link_error=?, case_link_updated_at=? WHERE id=?",
+        (status, error, _now(), call_id),
+    )
+    return status
+
+
+def retry_case_link(call_id: int) -> str:
+    try:
+        with _locked_case_link(call_id) as (conn, call):
+            if call["status"] != "done":
+                raise ValueError("analysis_not_done")
+            if call["case_link_status"] == "failed" and call["case_link_error"] in {"missing_plan", "invalid_plan", "stale_plan", "customer_changed"}:
+                return "failed"
+            links = conn.execute("SELECT DISTINCT customer_id FROM call_customer_links WHERE call_id=?", (call_id,)).fetchall()
+            if not links and call["case_id"] is None and call["case_link_plan"] is None and call["case_link_status"] == "not_required":
+                return "not_required"
+            if len(links) != 1:
+                return _set_case_link_state(conn, call_id, "failed", "customer_changed")
+            customer_id = links[0][0]
+            suffix = " FOR UPDATE" if database_backend.database_url() else ""
+            customer = conn.execute("SELECT id, deleted_at FROM customers WHERE id=?" + suffix, (customer_id,)).fetchone()
+            if not customer or customer["deleted_at"] is not None:
+                return _set_case_link_state(conn, call_id, "failed", "customer_changed")
+            if call["case_id"] is not None:
+                case = conn.execute("SELECT customer_id FROM cases WHERE id=?" + suffix, (call["case_id"],)).fetchone()
+                if case and case["customer_id"] == customer_id:
+                    if call["case_link_status"] == "linked" and call["case_link_error"] is None:
+                        return "linked"
+                    return _set_case_link_state(conn, call_id, "linked")
+                return _set_case_link_state(conn, call_id, "failed", "stale_plan")
+            if call["case_link_status"] == "linked":
+                return _set_case_link_state(conn, call_id, "failed", "stale_plan")
+            if call["case_link_plan"] is None:
+                return _set_case_link_state(conn, call_id, "failed", "missing_plan")
+            try:
+                plan = json.loads(call["case_link_plan"])
+            except (ValueError, TypeError):
+                plan = None
+            if not _valid_case_link_plan(plan):
+                return _set_case_link_state(conn, call_id, "failed", "invalid_plan")
+            if plan["customer_id"] != customer_id:
+                return _set_case_link_state(conn, call_id, "failed", "customer_changed")
+            now = _now()
+            if plan["action"] == "link":
+                case_id = plan["case_id"]
+                case = conn.execute("SELECT customer_id, status FROM cases WHERE id=?" + suffix, (case_id,)).fetchone()
+                if not case or case["customer_id"] != customer_id or case["status"] not in {"open", "follow_up"}:
+                    return _set_case_link_state(conn, call_id, "failed", "stale_plan")
+                conn.execute("UPDATE cases SET status='follow_up', updated_at=? WHERE id=?", (now, case_id))
+            else:
+                case_id = conn.execute(
+                    "INSERT INTO cases (customer_id, subject, status, created_at, updated_at) VALUES (?, ?, 'open', ?, ?)",
+                    (customer_id, call["topic"] or "เรื่องทั่วไป", now, now),
+                ).lastrowid
+            conn.execute("UPDATE calls SET case_id=?, updated_at=? WHERE id=?", (case_id, now, call_id))
+            return _set_case_link_state(conn, call_id, "linked")
+    except sqlite3.Error:
+        try:
+            record_case_link_failure(call_id, "write_failed")
+        except sqlite3.Error:
+            pass
+        return "failed"

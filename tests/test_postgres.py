@@ -140,7 +140,19 @@ def test_postgres_backup_restores_into_new_database(postgres, tmp_path):
                        env=backup_db.postgres_environment(restore_url), capture_output=True, check=True)
         with database_backend.connect(restore_url) as restored:
             assert restored.execute("SELECT last_name FROM customers WHERE id=?", (customer,)).fetchone()[0] == "Restore"
-            assert restored.execute("SELECT version FROM smartvoice_schema_version").fetchone()[0] == 1
+            assert restored.execute("SELECT version FROM smartvoice_schema_version").fetchone()[0] == database_backend.SCHEMA_VERSION
     finally:
         admin.raw.execute('DROP DATABASE IF EXISTS "' + database + '" WITH (FORCE)')
         admin.close()
+
+
+def test_postgres_case_link_retry_concurrency(postgres):
+    customer = db.insert_customer("Synthetic", "Customer")
+    call = db.insert_call("retry.wav", "retry", "/synthetic")
+    db.link_call_customer(call, customer)
+    db.update_call_results(call, "synthetic", "synthetic", "neutral", "สอบถามข้อมูลสินค้า")
+    db.save_case_link_plan(call, {"action": "create", "customer_id": customer})
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        assert list(pool.map(db.retry_case_link, [call] * 4)) == ["linked"] * 4
+    assert len(db.get_cases_by_customer(customer)) == 1
+    assert db.get_call_by_id(call)["case_link_status"] == "linked"
