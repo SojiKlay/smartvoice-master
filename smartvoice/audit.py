@@ -18,6 +18,7 @@ from smartvoice.logger import get_logger
 log = get_logger(__name__)
 
 # ── Actions ──────────────────────────────────────────────────────────────
+RETRY_CASE_LINK = "retry_case_link"
 CREATE = "create"
 UPDATE = "update"
 DELETE = "delete"          # for customers/warranties this means "hidden"
@@ -44,6 +45,7 @@ ENTITY_SALES_ORDER = "sales_order"
 ENTITY_REPORT = "report"
 
 ACTION_LABELS_TH = {
+    RETRY_CASE_LINK: "ลองจัดเคสอีกครั้ง",
     CREATE: "เพิ่ม",
     UPDATE: "แก้ไข",
     DELETE: "ลบ/ซ่อน",

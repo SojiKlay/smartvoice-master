@@ -16,6 +16,7 @@ from smartvoice.ui_helpers import (
     launch_processing_queue,
     metric_card,
     render_case_ownership,
+    render_case_link_status,
     render_transcript,
     status_badge,
 )
@@ -692,6 +693,7 @@ else:
                         f'<div style="color:#9ca3af;font-size:0.75rem">อัปเดตล่าสุด: {updated}</div>',
                         unsafe_allow_html=True,
                     )
+                render_case_link_status(call, key_suffix="admin")
                 if call["error_msg"]:
                     st.error(
                         "ประมวลผลไม่สำเร็จ — กด *ประมวลผล* อีกครั้ง หรือแจ้งผู้ดูแลระบบ  \n"

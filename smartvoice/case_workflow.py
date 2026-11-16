@@ -250,3 +250,13 @@ def case_brief(calls: list[dict]) -> dict:
 
 def retry_case_link(call_id: int) -> str:
     return db.retry_case_link(call_id)
+
+
+def case_link_needs_review(call: dict) -> bool:
+    if call.get("case_link_error") in {"missing_plan", "invalid_plan", "stale_plan", "customer_changed"}:
+        return True
+    try:
+        plan = json.loads(call.get("case_link_plan") or "null")
+    except (ValueError, TypeError):
+        return True
+    return not db._valid_case_link_plan(plan)

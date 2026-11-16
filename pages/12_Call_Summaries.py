@@ -27,6 +27,7 @@ from smartvoice.ui_helpers import (
     metric_card,
     picked_row,
     render_transcript,
+    render_case_link_status,
     sentiment_emoji,
 )
 
@@ -73,6 +74,8 @@ def _call_dialog(call_id: int) -> None:
             owner = case.get("assignee_name") or "ยังไม่มีคนรับ"
             meta.append(f"เคส #{case['id']} ({labels.case_status(case['status'])}, ผู้รับเคส: {owner})")
     st.caption("  •  ".join(meta))
+
+    render_case_link_status(call, key_suffix="summaries")
 
     if call.get("anomaly_detected"):
         (st.error if call.get("anomaly_severity") == "high" else st.warning)(

@@ -13,6 +13,7 @@ from smartvoice import case_workflow, db, labels, login_guard, pipeline, process
 from smartvoice.auth import (
     DEFAULT_ADMIN_PASSWORD,
     DEFAULT_ADMIN_USERNAME,
+    PAGE_ADMIN,
     PAGE_LABELS_TH,
     authenticate,
     bootstrap_password_is_custom,
@@ -784,3 +785,86 @@ def launch_processing_queue(call_ids: list) -> list | None:
 
     threading.Thread(target=_run_queue, daemon=True).start()
     return queued_ids
+
+
+def retry_case_link_for_current_user(call_id: int) -> tuple[str, bool]:
+    _, role = require_page(PAGE_ADMIN)
+    actor = st.session_state.get("current_username")
+    audit_fields = {"entity_id": call_id, "actor": actor, "actor_role": role}
+    requested = audit_trail.record(
+        audit_trail.RETRY_CASE_LINK, audit_trail.ENTITY_CALL,
+        changes={"result": "requested"}, **audit_fields,
+    )
+    if requested is None:
+        return "audit_unavailable", False
+    result = "failed"
+    try:
+        call = db.get_call_by_id(call_id)
+        if not call:
+            result = "not_found"
+        elif call["status"] != "done":
+            result = "not_ready"
+        elif call.get("case_link_status") in {"pending", "failed"} and case_workflow.case_link_needs_review(call):
+            result = "manual_review"
+        else:
+            user, current_role = get_current_user()
+            if not user or current_role not in {"Admin", "Supervisor"}:
+                result = "denied"
+            else:
+                result = case_workflow.retry_case_link(call_id)
+                if result not in {"linked", "failed", "pending", "not_required"}:
+                    result = "failed"
+    except Exception:
+        result = "failed"
+    recorded = audit_trail.record(
+        audit_trail.RETRY_CASE_LINK, audit_trail.ENTITY_CALL,
+        changes={"result": result}, **audit_fields,
+    )
+    return result, recorded is not None
+
+
+def _retry_case_link_clicked(call_id: int) -> None:
+    st.session_state[f"_case_link_flash_{call_id}"] = retry_case_link_for_current_user(call_id)
+
+
+def render_case_link_status(call: dict, key_suffix: str = "") -> None:
+    call_id = call["id"]
+    flash = st.session_state.pop(f"_case_link_flash_{call_id}", None)
+    if flash:
+        result, recorded = flash
+        if result == "linked":
+            st.success("จัดเคสสำเร็จ โดยไม่ประมวลผลเสียงซ้ำ")
+        elif result == "not_required":
+            st.info("สายนี้ยังไม่ต้องจัดเคส")
+        elif result == "denied":
+            st.warning("สิทธิ์ของบัญชีเปลี่ยนแล้ว ไม่ได้ดำเนินการจัดเคส")
+        elif result == "manual_review":
+            st.warning("ต้องตรวจสอบด้วยคนก่อนลองจัดเคสอีกครั้ง")
+        elif result == "audit_unavailable":
+            st.warning("ยังไม่ได้จัดเคส เพราะบันทึกประวัติการใช้งานไม่ได้ กรุณาลองใหม่ภายหลัง")
+        else:
+            st.warning("ยังจัดเคสไม่สำเร็จ ผลวิเคราะห์เสียงยังคงอยู่ กรุณาตรวจสอบสถานะอีกครั้ง")
+        if not recorded and result != "audit_unavailable":
+            st.warning("บันทึกประวัติผลการจัดเคสไม่ได้ กรุณาแจ้งผู้ดูแลระบบและตรวจสถานะก่อนลองใหม่")
+    if call.get("status") != "done":
+        return
+    status = call.get("case_link_status")
+    if status == "linked":
+        st.caption("สถานะการจัดเคส: เชื่อมเคสแล้ว")
+        return
+    if status == "not_required":
+        st.caption("สถานะการจัดเคส: ยังไม่ต้องจัดเคส เนื่องจากไม่มีลูกค้าเชื่อมอยู่")
+        return
+    if status not in {"pending", "failed"}:
+        return
+    message = "วิเคราะห์เสียงสำเร็จ แต่จัดเคสไม่สำเร็จ" if status == "failed" else "วิเคราะห์เสียงสำเร็จ กำลังรอการจัดเคส"
+    review = case_workflow.case_link_needs_review(call)
+    if review:
+        message += " — ต้องตรวจสอบด้วยคนก่อน ไม่สามารถลองจัดเคสอัตโนมัติได้"
+    st.warning(message)
+    user, role = get_current_user()
+    if user and role in {"Admin", "Supervisor"} and not review:
+        st.button(
+            "ลองจัดเคสอีกครั้ง", key=f"case_link_retry_{key_suffix}_{call_id}",
+            on_click=_retry_case_link_clicked, args=(call_id,),
+        )
