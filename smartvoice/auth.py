@@ -359,8 +359,8 @@ def authenticate(username: str, password: str) -> UserRecord | None:
 
     try:
         row = db.get_user_by_username(username)
-    except sqlite3.Error:
-        row = None
+    except Exception:
+        return None
 
     if row:
         if not row["is_active"]:
@@ -389,6 +389,28 @@ def authenticate(username: str, password: str) -> UserRecord | None:
 
 
 # ── User management validation ───────────────────────────────────────────
+
+def session_user(username: str, user_id: int | None, source: str) -> UserRecord | None:
+    if not username or source not in {"db", "env"}:
+        return None
+    if source == "db":
+        if user_id is None:
+            return None
+        row = db.get_user_by_id(user_id)
+        if not row or not row["is_active"] or row["username"].lower() != username.lower():
+            return None
+        return UserRecord(
+            username=row["username"],
+            role=normalize_role(row["role"]),
+            password_hash="",
+            display_name=row["display_name"] or row["username"],
+            user_id=row["id"],
+            source="db",
+        )
+    if db.get_user_by_username(username) is not None:
+        return None
+    return parse_users().get(username.lower())
+
 
 def validate_username(username: str) -> str | None:
     """Return an error message, or None when the username is acceptable."""

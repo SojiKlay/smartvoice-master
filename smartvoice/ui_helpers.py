@@ -21,6 +21,7 @@ from smartvoice.auth import (
     default_admin_password_unchanged,
     ensure_default_admin,
     role_label,
+    session_user,
 )
 from smartvoice.config import (
     MOCK_STT,
@@ -402,6 +403,26 @@ def recover_stale_processing_once() -> None:
 
 def get_current_user() -> tuple[str | None, str | None]:
     """Return (name, role) of the logged-in user, or (None, None)."""
+    username = st.session_state.get("current_username")
+    if not username:
+        for key in _SESSION_KEYS:
+            st.session_state.pop(key, None)
+        return None, None
+    identity = (
+        username,
+        st.session_state.get("current_user_id"),
+        st.session_state.get("current_user_source"),
+    )
+    try:
+        record = session_user(*identity)
+    except Exception:
+        record = None
+    if record is None:
+        for key in _SESSION_KEYS:
+            st.session_state.pop(key, None)
+        return None, None
+    st.session_state["current_user"] = record.label
+    st.session_state["current_user_role"] = record.role
     return (
         st.session_state.get("current_user"),
         st.session_state.get("current_user_role"),
@@ -410,6 +431,7 @@ def get_current_user() -> tuple[str | None, str | None]:
 
 def get_current_user_id() -> int | None:
     """Row id of the logged-in user in the `users` table (None for .env accounts)."""
+    get_current_user()
     return st.session_state.get("current_user_id")
 
 

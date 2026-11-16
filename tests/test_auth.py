@@ -13,6 +13,7 @@ def temp_db(monkeypatch):
     """Fresh SQLite file per test so account state never leaks between tests."""
     fd, path = tempfile.mkstemp(suffix=".db")
     os.close(fd)
+    monkeypatch.delenv("DATABASE_URL", raising=False)
     monkeypatch.setenv("DB_PATH", path)
     monkeypatch.setenv("SMARTVOICE_USERS", "")
     monkeypatch.delenv(auth.BOOTSTRAP_PASSWORD_ENV, raising=False)
@@ -326,3 +327,36 @@ def test_would_remove_last_admin_ignores_disabled_admins(temp_db):
     db.update_user(other_id, is_active=False)
 
     assert auth.would_remove_last_admin(admin["id"], new_active=False) is True
+
+
+@pytest.mark.parametrize("operation", ["demote", "disable", "delete"])
+def test_last_admin_database_protection(temp_db, operation):
+    auth.ensure_default_admin()
+    user_id = db.get_user_by_username("admin")["id"]
+    with pytest.raises(db.LastAdminError):
+        if operation == "delete":
+            db.delete_user(user_id)
+        elif operation == "disable":
+            db.update_user(user_id, is_active=False)
+        else:
+            db.update_user(user_id, role="Agent")
+    assert db.count_active_admins() == 1
+
+
+def test_disabled_db_account_cannot_use_env_password(temp_db, monkeypatch):
+    user_id, _ = auth.create_user("staff", "db-password", "Agent")
+    encoded = auth.hash_password("env-password")
+    monkeypatch.setenv("SMARTVOICE_USERS", f"staff|Admin|{encoded}")
+    db.update_user(user_id, is_active=False)
+    assert auth.authenticate("staff", "env-password") is None
+
+
+def test_login_db_failure_does_not_use_env_fallback(temp_db, monkeypatch):
+    encoded = auth.hash_password("env-password")
+    monkeypatch.setenv("SMARTVOICE_USERS", f"staff|Admin|{encoded}")
+
+    def unavailable(username):
+        raise RuntimeError("database unavailable")
+
+    monkeypatch.setattr(db, "get_user_by_username", unavailable)
+    assert auth.authenticate("staff", "env-password") is None
