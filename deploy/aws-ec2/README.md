@@ -1,4 +1,4 @@
-# SmartVoice บน AWS EC2 — คู่มือติดตั้งสำหรับทดลองใช้ (Stage 1)
+# SmartVoice บน AWS EC2 — คู่มือติดตั้งและส่งต่อ Technical Pilot
 
 ติดตั้ง SmartVoice ทั้งระบบบน EC2 เครื่องเดียว เพื่อให้ตัวแทนบริษัทเข้าทดลองใช้ผ่านเบราว์เซอร์ทาง HTTPS
 
@@ -6,15 +6,22 @@
 ผู้ใช้ ──HTTPS──▶ EC2 (Ubuntu 24.04)
                   ├─ Caddy :443  (ใบรับรอง Let's Encrypt อัตโนมัติ)
                   │    └─▶ Streamlit 127.0.0.1:8501  (systemd: smartvoice)
-                  ├─ /opt/smartvoice/app/data   SQLite + ไฟล์เสียง + หลักฐาน (EBS เข้ารหัส)
+                  ├─ /opt/smartvoice/app/data   ไฟล์เสียง + หลักฐาน + checkpoints (EBS เข้ารหัส)
+                  ├─ PostgreSQL schema v2 (หรือ SQLite ใน data/ หากไม่ตั้ง DATABASE_URL)
                   └─ backup ทุกคืน 02:30 ─▶ S3 ส่วนตัว (ถ้าตั้ง bucket)
                          │
                          └─▶ pyannoteAI API / Typhoon API (ขาออก HTTPS)
 ```
 
-**ขอบเขต:** แบบนี้เป็น **ขั้นทดลองใช้ ไม่ใช่ production** มีเครื่องเดียว (ถ้าเครื่องล่ม ระบบก็หยุด) และประมวลผลเสียงใน process เดียวกับเว็บ ระบบหลายเครื่อง + PostgreSQL + S3 เป็นขั้นถัดไปตาม `docs/cloud_migration_plan.md`
+**ขอบเขต:** แบบนี้เป็น **ขั้นทดลองใช้ ไม่ใช่ production** มีเครื่องเดียว (ถ้าเครื่องล่ม ระบบก็หยุด) และประมวลผลเสียงใน process เดียวกับเว็บ PostgreSQL รองรับแล้วผ่าน `DATABASE_URL`; distributed worker และ object storage สำหรับ runtime ยังเป็นแผน ส่วน S3 ในคู่มือนี้ใช้สำรองข้อมูลเท่านั้น
 
 ---
+
+## สถานะส่งต่อ Phase 6
+
+วันที่ 17 พฤศจิกายน 2026 ผู้ใช้ยืนยันว่า Phase 6 บน AWS Academy Learner Lab ทำงานด้วย Ubuntu 24.04, PostgreSQL schema v2 และ Caddy/HTTPS; RBAC ผ่าน 6 รายการ, Case Linking/Retry/Audit และ PostgreSQL backup/restore ด้วยข้อมูลทดสอบผ่านแล้ว STT/AI สำเร็จ 6/6 หลัง Retry โดย 2 ไฟล์เคยติด Typhoon connection/timeout ใช้ `AI_API_TIMEOUT=120` แต่คุณภาพ STT/ผู้พูด/AI ยังตรวจรับไม่ครบ ดู [สถานะและประวัติ](../../PROJECT_STATUS.md)
+
+ผลนี้เป็นรายงานผู้ใช้ ไม่ใช่การตรวจ server ซ้ำโดยผู้จัดเอกสาร และไม่ยืนยันว่า server ยัง online ตลอดเวลา ก่อนส่งมอบให้ผู้ดูแลบันทึก release SHA, schema version, ผู้รับผิดชอบ, domain, ที่เก็บ backup และผล restore ผ่านช่องทางภายในที่เหมาะสม ห้ามใส่ credentials หรือข้อมูลลูกค้าใน repo คำสั่งด้านล่างเป็น runbook สำหรับผู้ดูแลที่ได้รับอนุมัติ ไม่ใช่คำสั่งให้ deploy อัตโนมัติ
 
 ## 0. ก่อนเริ่ม — ต้องตัดสินใจ/เตรียมให้เรียบร้อย
 
@@ -102,13 +109,13 @@ journalctl -u smartvoice -f
 
 **การกันเดารหัสผ่าน:** ใส่ผิด 5 ครั้งต่อบัญชีจะล็อกบัญชีนั้น 60 วินาที และผิด 20 ครั้งจาก IP เดียวจะล็อก IP นั้น 5 นาที (ทั้งสำนักงานที่ใช้ IP เดียวกันจะโดนด้วย) นับรวมทุกแท็บ/ทุกเบราว์เซอร์ ตัวนับอยู่ในหน่วยความจำ — รีสตาร์ท service แล้วนับใหม่
 
-## 6. Backup และกู้คืน
+## 6. Backup และกู้คืน (เลือกให้ตรง Backend)
 
-- ทุกคืน 02:30 (เวลาไทย) `smartvoice-backup.timer` ทำ snapshot ฐานข้อมูลที่ตรวจ `integrity_check` แล้วไว้ใน `data/backups/` (เก็บ 14 ชุดล่าสุด) และถ้าตั้ง bucket ไว้จะ sync snapshot + ไฟล์เสียง + หลักฐานไป `s3://<bucket>/smartvoice/` (เข้ารหัส SSE; ไม่ลบของใน S3)
+- ทุกคืน 02:30 (เวลาไทย) `smartvoice-backup.timer` สำรองไว้ใน `data/backups/`: SQLite เป็น `.db` ที่ตรวจ `integrity_check`; PostgreSQL เป็น custom `.dump` ที่ตรวจ archive listing (เก็บ 14 ชุดล่าสุด) และถ้าตั้ง bucket ไว้จะ sync snapshot + ไฟล์เสียง + หลักฐานไป `s3://<bucket>/smartvoice/` (เข้ารหัส SSE; ไม่ลบของใน S3)
 - สั่ง backup ทันที: `sudo systemctl start smartvoice-backup && journalctl -u smartvoice-backup -n 20`
 - ตั้ง EBS snapshot รายวัน (AWS Backup / Data Lifecycle Manager) เป็นอีกชั้นหนึ่ง
 
-**กู้คืนฐานข้อมูล** (ทดลองกู้อย่างน้อย 1 ครั้งก่อนให้บริษัทใช้จริง):
+**กู้คืน SQLite เท่านั้น** (หากตั้ง `DATABASE_URL` ให้ใช้หัวข้อ PostgreSQL Restore ด้านล่าง ห้ามใช้การคัดลอก `.db` แทน PostgreSQL restore):
 
 ```bash
 sudo systemctl stop smartvoice
@@ -167,6 +174,12 @@ sudo -u postgres createdb --owner=smartvoice --encoding=UTF8 --template=template
 
 `pg_dump` ต้องมี major version เท่ากับหรือใหม่กว่า server; installer ติดตั้ง client ของ Ubuntu ซึ่งอาจเก่ากว่า RDS ที่เลือก ตรวจ `pg_dump --version` และเวอร์ชัน server ก่อนเปิด backup timer
 
+### อัปเกรด PostgreSQL v1 → v2 (Phase 6)
+
+ไม่ต้องนำเข้า SQLite ซ้ำ หยุดรับงาน รอ processing จบ สำรอง DB และไฟล์ runtime พร้อมเก็บ config เดิมอย่างปลอดภัย แล้วหยุด app/backup timer/service ตามขั้น cutover ด้านล่าง จาก release ที่เตรียมไว้ รัน `python -m scripts.migrate_postgres` เพื่อตรวจโหมด dry-run แล้ว `python -m scripts.migrate_postgres --apply` ด้วยผู้ใช้ smartvoice และ interpreter ของ release นั้น คำสั่งอ่าน `DATABASE_URL` จาก `.env`; อย่าวาง URL ที่มีรหัสใน command history
+
+ตรวจ `SELECT version FROM smartvoice_schema_version;` ต้องได้ `2` แล้วรัน installer ซ้ำและตรวจ Login/RBAC, Case Linking/Retry/Audit, จำนวนข้อมูล และ backup/restore ในฐานแยกก่อนเปิดใช้งาน ไม่มี down migration อัตโนมัติ; หากจะ rollback ให้จับคู่ code/schema/config และ reconcile write ใหม่ตามหัวข้อ restore ไม่สลับโค้ดเก่ากับ schema ใหม่โดยไม่ตรวจ
+
 ### Cutover จาก SQLite
 
 1. ซ้อมด้วยข้อมูลสังเคราะห์ก่อน บันทึกเวอร์ชันโค้ด/config และ path ข้อมูล หยุดรับ uploads รอ processing จบ แล้วหยุด `smartvoice`, `smartvoice-backup.timer`, `smartvoice-backup.service`
@@ -195,6 +208,14 @@ sudo -u postgres createdb --owner=smartvoice --encoding=UTF8 --template=template
 หากยังไม่มี write ใหม่หลัง cutover ให้หยุด service แล้วกลับ SQLite snapshot พร้อมโค้ด/config ที่จับคู่กันได้ หาก PostgreSQL รับ write ใหม่แล้ว **ห้ามกลับ SQLite เก่าทันที** ต้องสำรองและ reconcile ข้อมูลใหม่ก่อน งาน API ที่ส่งแล้วไม่ย้อนกลับด้วย DB restore
 
 ผลทดสอบในเครื่องไม่รับรอง networking, systemd/Caddy, TLS, IAM, EBS หรือ permissions ของ EC2 จริง ต้องตรวจบนเครื่องเป้าหมายก่อนรับมอบ
+
+## การรับช่วงดูแลและปัญหา API
+
+- แยก Retry สายที่ AI ล้มเหลว (เรียก Typhoon ใหม่ มีค่าใช้จ่าย; STT ใช้ checkpoint ได้เมื่อถูกต้อง) จาก Retry Case Linking (ใช้แผนที่เก็บไว้ ไม่เรียก AI) ห้ามลบ checkpoint เพื่อแก้ timeout โดยไม่ตรวจสถานะงานผู้ให้บริการ
+- `AI_API_TIMEOUT=120` วินาทีเป็น timeout ของ request ไม่ใช่ SLA ต่อสาย และ `AI_JOB_TIMEOUT` คุมเวลารอ STT job แยกกัน เมื่อ connection/timeout ให้ตรวจเวลาที่เกิด ชนิด error, เครดิต/สถานะผู้ให้บริการ และ network โดยไม่เผย payload/key แล้วให้ผู้ดูแลตัดสินใจ Retry ไม่ควรวน Retry แบบไม่จำกัด
+- เก็บหลักฐานผลแต่ละรายการและเวลาทดสอบพร้อม release SHA; การดู readiness/key หรือ `systemctl status` ไม่แทน live API test, quality acceptance หรือ restore drill
+- ก่อน Limited Pilot ต้องมีผู้รับผิดชอบช่วงทดลอง เกณฑ์ตรวจคุณภาพและคนทบทวนผล AI, ขอบเขตผู้ใช้/ปริมาณงาน, งบ API, การแจ้งปัญหา/หยุดรับงาน และ retention ของข้อมูลที่ได้รับอนุมัติ
+- ก่อน Production ต้องมีสภาพแวดล้อมที่รับประกันความต่อเนื่องแทน Learner Lab, monitoring/alert, แผน capacity/recovery และ RPO/RTO ที่ทดสอบแล้ว รวมการกู้ไฟล์เสียง/หลักฐาน/checkpoints คู่กับ DB; ผล restore DB ด้วยข้อมูลทดสอบยังไม่ครอบคลุมทั้งหมดนี้
 
 ## รายการไฟล์ deployment
 

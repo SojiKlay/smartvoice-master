@@ -1,6 +1,45 @@
 # SmartVoice — สถานะสำหรับพัฒนาต่อ
 
-## สถานะล่าสุด — Phase 6 Milestones A/B พัฒนาแล้ว; Cloud Deployment หยุดชั่วคราว (17 พฤศจิกายน 2026)
+## สถานะล่าสุด — Phase 6 Technical Pilot บน AWS Academy (17 พฤศจิกายน 2026)
+
+**Deploy Phase 6 บน AWS Academy Learner Lab สำเร็จตามผลที่ผู้ใช้ยืนยัน** เป้าหมายถัดไปคือ Limited Pilot สำหรับพนักงานกลุ่มเล็ก แต่ยังไม่รับรองความพร้อม Production หรือคุณภาพ AI ทั้งหมด
+
+### ผลล่าสุดที่ผู้ใช้ยืนยัน (ไม่ได้ตรวจ AWS ซ้ำในรอบส่งต่อ)
+
+- EC2 Ubuntu 24.04, PostgreSQL **schema v2**, Caddy/HTTPS และ SmartVoice ทำงานได้
+- Multi-user / RBAC ผ่าน **6 รายการ**; ยังไม่มีรายละเอียดรายข้อแนบในรอบนี้ จึงไม่ขยายผลเป็นการผ่านทุกกรณีหรือ load test
+- Case Linking / Retry / Audit ผ่านการทดสอบบน PostgreSQL
+- PostgreSQL Backup/Restore ผ่านบน EC2 **ด้วยข้อมูลทดสอบ** ไม่ใช่หลักฐานกู้คืนข้อมูลจริงหรือไฟล์ประกอบทั้งหมด
+- STT/AI ประมวลผลครบ **6/6 ไฟล์หลัง Retry** มี 2 ไฟล์เคยล้มเหลวจาก Typhoon API connection/timeout; ไม่ใช่การผ่านครบตั้งแต่ครั้งแรก และไม่ใช่หลักฐานว่าต้นเหตุ timeout หายแล้ว
+- ใช้ `AI_API_TIMEOUT=120` วินาที (ตรงกับค่าเริ่มต้นในโค้ดและ `.env.example`); เป็น timeout ของคำขอ API ไม่ใช่เวลารวมสูงสุดต่อสาย
+- **ความแม่นยำ STT, Speaker Diarization และ AI Analysis ยังไม่ได้ตรวจรับครบ** การประมวลผลสำเร็จไม่เท่ากับผลวิเคราะห์ถูกต้อง
+- AWS Academy เป็น **Technical Pilot ไม่ใช่ Production** สถานะบัญชี Free Tier ที่ถูกระงับด้านล่างเป็นประวัติก่อนเปลี่ยนสภาพแวดล้อม
+
+### จุดเริ่มต้นสำหรับ Developer
+
+ตรวจ Git ในรอบส่งต่อ: branch `test/phase6-e2e`, HEAD `02eacfb` (`docs: update Phase 6 status and AWS blocker`), working tree สะอาดก่อนแก้เอกสาร ไม่ได้ยืนยันว่า HEAD นี้ตรงกับ commit ที่ deploy บน EC2 ให้เจ้าของระบบส่ง release SHA และหลักฐานทดสอบที่ปิดข้อมูลลับผ่านช่องทางที่เหมาะสม
+
+อ่าน [Developer Setup](README.md#developer-setup) และ [คู่มือ Deployment](deploy/aws-ec2/README.md) ก่อนเริ่ม จากนั้นสร้าง branch งานแยกจาก revision ที่ทีมยืนยัน ไม่ใช้คำสั่งในประวัติด้านล่างเป็นคำสั่ง deploy ปัจจุบัน
+
+Architecture ปัจจุบัน: Streamlit → pyannoteAI → Typhoon → `insight_rules` → SQLite หรือ PostgreSQL → Case Linking; `done` หมายถึง AI Analysis สำเร็จ ส่วนสถานะ Case Linking แยกต่างหาก ไฟล์เสียง/หลักฐาน/checkpoints และ background threads ยังอยู่บนเครื่องแอป ไม่ใช่ distributed worker หรือ object storage
+
+### งานค้างตามลำดับก่อนเปิด Limited Pilot
+
+1. ยืนยัน release SHA/schema/config ที่ใช้งานจริง และเก็บหลักฐาน 6 รายการ RBAC, Case Linking/Retry/Audit, backup/restore พร้อมวันที่และขอบเขต; เก็บเหตุผล PostgreSQL test ที่เคย deselected ไว้ด้วย ห้ามแนบ secrets/เสียง/ข้อความลูกค้าใน Git
+2. ตรวจรับคุณภาพเสียงและผลวิเคราะห์กับชุดทดสอบที่ได้รับอนุญาต: transcript, ผู้พูด, สรุป, sentiment, QA, next action, anomaly และการเชื่อมเคส กำหนดเกณฑ์ยอมรับและให้คนตรวจผลก่อนนำไปตัดสินผลงานพนักงาน
+3. เก็บอัตรา connection/timeout, latency และค่าใช้จ่ายต่อสาย/Retry; ค่า 120 วินาทีไม่แก้ปัญหาเครือข่ายหรือรับประกันความพร้อมผู้ให้บริการ การ Retry ประมวลผล AI เรียก Typhoon ใหม่และมีค่าใช้จ่าย ส่วน Retry Case Linking ใช้แผนเดิม ไม่เรียก AI
+4. ทดสอบ regression บน revision ส่งต่อและ PostgreSQL ทดสอบแยก รวม session revalidation, concurrency และ recovery เมื่อรีสตาร์ท; แผน Case Linking missing/invalid/stale ยังต้องตรวจด้วยคน ไม่มี UI ยืนยันแผนใหม่ และ audit เป็น best-effort เมื่อ DB ขัดข้อง
+5. ก่อนใช้กับบริษัทให้ตกลงเจ้าของระบบ/ผู้ดูแล, กลุ่มผู้ใช้และปริมาณงาน, การอนุมัติส่งข้อมูลให้ API, retention, งบ/เครดิต, วิธีแจ้งปัญหาและหยุดทดลอง พร้อมซ้อมคืน DB คู่กับไฟล์เสียง/หลักฐาน/checkpoints และกำหนด RPO/RTO
+
+**ข้อจำกัดที่ยังคงอยู่:** Learner Lab ไม่รับประกันบริการต่อเนื่องและห้ามใส่ข้อมูลลูกค้าจริงตาม runbook; single EC2 ไม่มี failover, งานประมวลผลอยู่ในเว็บและหยุดเมื่อ process หยุด, login counters อยู่ในหน่วยความจำ, secrets อยู่ใน `.env`, ยังไม่มี distributed queue/worker หรือ monitoring/alert ครบถ้วน ผล 6/6 และ RBAC 6 รายการไม่รับรอง load, uptime หรือคุณภาพ AI สำหรับ Production
+
+### การตรวจสอบรอบส่งต่อเอกสาร
+
+แก้เฉพาะ `PROJECT_STATUS.md`, `README.md`, `deploy/aws-ec2/README.md`; ไม่แก้ source/architecture, `.env` หรือข้อมูลเดิม ไม่เรียก live APIs, ไม่เข้าถึง AWS, ไม่ Deploy/Merge/Commit/Push ผล local tests ที่รันจริงวันที่ 17 พฤศจิกายน 2026 บน Python 3.11.9, HEAD `02eacfb` พร้อมการแก้เอกสารนี้: `python -m pytest tests/ -q -ra --basetemp=.pytest_cache/work` ได้ **709 passed, 27 skipped, 0 failed ใน 91.23 วินาที** ใช้ SQLite/mock APIs และปิด dotenv ตาม README; 17 รายการ skip เพราะไม่ได้ตั้ง PostgreSQL ทดสอบแยก และ 10 รายการ skip เพราะไม่มี Bash ผลนี้ไม่รับรอง PostgreSQL/live APIs/AWS และยังต้องรันรายการที่ skip ในสภาพแวดล้อมพร้อมก่อนปิดเกณฑ์ทดสอบทั้งหมด `git diff --check` ผ่านและตรวจว่าประวัติ Phase 5/6 เดิมยังอยู่ครบ
+
+## ประวัติ Phase 6 ก่อน Deploy — Milestones A/B และ Cloud blocker (17 พฤศจิกายน 2026)
+
+ส่วนนี้คงข้อความเดิมเพื่อรักษาประวัติ สถานะ “ยังไม่ได้ Deploy” และ “Cloud Deployment หยุดชั่วคราว” ถูกแทนที่ด้วยสถานะล่าสุดด้านบน
 
 เป้าหมายยังเป็น **Limited Pilot สำหรับพนักงานกลุ่มเล็ก** ไม่ใช่ Production Ready **Phase 6 ยังไม่ได้ Deploy ขึ้น AWS** และ **STT ยังเป็นปัญหาที่ยังไม่ได้ยืนยันว่าแก้สำเร็จ**
 
