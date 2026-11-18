@@ -1,5 +1,24 @@
 # SmartVoice — สถานะสำหรับพัฒนาต่อ
 
+## อัปเดตล่าสุด — Elastic IP และ Stop/Start (19 พฤศจิกายน 2026)
+
+**ผลที่ผู้ใช้ยืนยันเท่านั้น — ผู้จัดเอกสารไม่ได้เชื่อมต่อหรือตรวจ AWS ด้วยตนเองในรอบนี้**
+
+- สภาพแวดล้อม: AWS Academy Learner Lab, EC2 Instance ชื่อ `SmartVoice`
+- Elastic IP: `44.221.132.254`; URL ปัจจุบัน: [SmartVoice Technical Pilot](https://44-221-132-254.sslip.io)
+- ผู้ใช้ตั้งค่า Caddy ให้ใช้โดเมน `44-221-132-254.sslip.io` สำเร็จและเปิด HTTPS ได้ โดยแก้ Caddyfile บน EC2 ด้วยมือ
+- ทดสอบ Stop → Start EC2 แล้วกลับมาเปิดเว็บด้วย URL เดิมได้สำเร็จ
+- **ก่อนทดสอบ Stop/Start** Dashboard แสดงข้อมูล 6 สาย วิเคราะห์เสร็จ 6 สาย ยังไม่มีผลยืนยันการเทียบข้อมูลทั้ง 6 สายหลัง Start ในรอบนี้ จึงไม่ถือว่าเป็นการตรวจความครบถ้วนของข้อมูลหลังเปิดเครื่องหรือ restore drill
+- ผู้ใช้ยืนยันว่าไม่มีการแก้ Source Code, PostgreSQL Schema หรือ Deploy แอปใหม่ในการตั้งค่า Elastic IP ครั้งนี้
+
+Elastic IP เป็นที่อยู่คงที่ตราบใดที่ยังจัดสรรและผูกกับ EC2 ที่ใช้บริการนี้ หากปล่อย IP หรือเปลี่ยนการผูก URL อาจไม่ชี้มาที่ SmartVoice เดิม AWS Academy **ไม่รับประกันการคงอยู่ของทรัพยากรระยะยาว** และ IP คงที่ไม่ได้ทำให้เว็บเปิดได้เมื่อ Lab/EC2 หยุดหรือรับประกัน uptime ระบบยังเป็น Technical Pilot ไม่ใช่ Production
+
+**ก่อน Deploy รุ่นใหม่:** ตรวจโดเมนใน `/etc/caddy/Caddyfile` และค่า `--domain` ที่จะส่งให้ installer ให้ตรงกับ `44-221-132-254.sslip.io` (หรือโดเมนใหม่ที่อนุมัติภายหลัง) เพราะ installer สร้าง Caddyfile จาก template และเขียนทับไฟล์บน EC2 การใช้คำสั่งเก่าที่มีโดเมนเดิมอาจทำให้ URL กลับเป็นค่าเก่า ดู [ขั้นตอนเปิดใช้งานหลัง Start Lab/EC2](deploy/aws-ec2/README.md#lab-startup)
+
+ตรวจ Git ก่อนแก้เอกสาร: branch `test/phase6-e2e`, HEAD `e724d93` (`docs: update SmartVoice Phase 6 pilot and developer handoff`), working tree สะอาด รอบนี้เพิ่มเฉพาะเอกสารสถานะและ runbook; ไม่แก้ `.env`, Source Code, schema หรือข้อมูลเดิม และไม่ Commit/Push/Merge/Deploy ข้อความวันที่ 17 พฤศจิกายนและประวัติ Phase 5/6 ด้านล่างคงไว้เป็นบันทึกเดิม รวมผล tests ณ วันที่ระบุ ไม่ใช่ผล AWS ที่ทดสอบซ้ำในรอบนี้
+
+ผลตรวจ Local รอบเอกสารวันที่ 19 พฤศจิกายน 2026: รัน `tests/` ทั้งชุดด้วย SQLite/mock APIs, ปิด dotenv และใช้ฐานทดสอบแยกตาม README ได้ **709 passed, 27 skipped, 0 failed ใน 91.18 วินาที**; 17 รายการ skip เพราะไม่ได้ตั้ง PostgreSQL ทดสอบ และ 10 รายการเพราะไม่มี Bash ผลนี้ไม่ใช่การตรวจ AWS/HTTPS/PostgreSQL จริงหรือคุณภาพ AI และไม่แทนผล Stop/Start ที่ผู้ใช้ยืนยันข้างต้น
+
 ## สถานะล่าสุด — Phase 6 Technical Pilot บน AWS Academy (17 พฤศจิกายน 2026)
 
 **Deploy Phase 6 บน AWS Academy Learner Lab สำเร็จตามผลที่ผู้ใช้ยืนยัน** เป้าหมายถัดไปคือ Limited Pilot สำหรับพนักงานกลุ่มเล็ก แต่ยังไม่รับรองความพร้อม Production หรือคุณภาพ AI ทั้งหมด

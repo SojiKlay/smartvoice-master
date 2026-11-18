@@ -23,6 +23,46 @@
 
 ผลนี้เป็นรายงานผู้ใช้ ไม่ใช่การตรวจ server ซ้ำโดยผู้จัดเอกสาร และไม่ยืนยันว่า server ยัง online ตลอดเวลา ก่อนส่งมอบให้ผู้ดูแลบันทึก release SHA, schema version, ผู้รับผิดชอบ, domain, ที่เก็บ backup และผล restore ผ่านช่องทางภายในที่เหมาะสม ห้ามใส่ credentials หรือข้อมูลลูกค้าใน repo คำสั่งด้านล่างเป็น runbook สำหรับผู้ดูแลที่ได้รับอนุมัติ ไม่ใช่คำสั่งให้ deploy อัตโนมัติ
 
+<a id="lab-startup"></a>
+
+## เปิดใช้งานหลัง Start Lab และ Start EC2 (Elastic IP — 19 พฤศจิกายน 2026)
+
+**สถานะที่ผู้ใช้ยืนยัน:** EC2 ชื่อ `SmartVoice` บน AWS Academy Learner Lab ผูก Elastic IP `44.221.132.254` และใช้ [https://44-221-132-254.sslip.io](https://44-221-132-254.sslip.io) ผู้ใช้แก้ Caddyfile บน EC2 ด้วยมือให้ใช้โดเมนนี้ เปิด HTTPS สำเร็จ และทดสอบ Stop → Start แล้วเปิด URL เดิมได้ ไม่มีการแก้ Source Code/schema หรือ Deploy แอปใหม่ ก่อนทดสอบ Dashboard แสดง 6 สาย วิเคราะห์เสร็จ 6 สาย; ยังไม่ใช่ผลตรวจจำนวนข้อมูลหลัง Start ผู้จัดเอกสารไม่ได้เข้าตรวจ AWS หรือรันคำสั่งบน EC2 ในรอบนี้
+
+ขั้นตอนสำหรับผู้ดูแลที่ได้รับอนุมัติในครั้งถัดไป (ไม่ต้องติดตั้งหรือ migrate ฐานข้อมูลใหม่เพียงเพราะ Start เครื่อง):
+
+1. เปิด AWS Academy Learner Lab กด **Start Lab** และรอพร้อมใช้งาน จากนั้นเปิด AWS Console ของ Lab เลือก region เดิม
+2. ไป EC2 → Instances เลือก `SmartVoice` โดยตรวจ Instance ID ให้ตรงกับเครื่องเดิม หากหยุดอยู่ให้กด **Start instance** รอเป็น `Running` และ status checks ผ่าน หากไม่พบเครื่องเดิมให้หยุดและติดต่อผู้ดูแล ไม่สร้างเครื่องหรือฐานข้อมูลทดแทนทันที
+3. ตรวจ Elastic IP `44.221.132.254` ว่ายังจัดสรรในบัญชี/region เดิมและ association ชี้ไปเครื่องที่ถูกต้อง หากไม่ตรงให้หยุดวิเคราะห์ก่อน ไม่ release หรือ allocate IP ใหม่เพื่อทดลอง
+4. เปิด URL ด้านบน ตรวจว่าเบราว์เซอร์ไม่มีคำเตือน certificate และเข้าสู่หน้า SmartVoice ได้ Login ด้วยบัญชีเดิม ตรวจ Dashboard/รายการสายด้วยตัวกรองเดิม เทียบกับค่าก่อนหยุดเครื่อง (6 สาย วิเคราะห์เสร็จ 6 สายตามรายงานครั้งนี้) บันทึกผลหลัง Start แยกต่างหาก; ไม่กดประมวลผลซ้ำเพียงเพื่อทดสอบว่าเว็บเปิดได้
+5. หากเว็บยังไม่พร้อม ให้ผู้ดูแลเข้า EC2 ผ่านช่องทางที่ได้รับอนุมัติและตรวจตามคำสั่งด้านล่างก่อนเปลี่ยน config หรือ restart บริการ ห้ามแสดง `.env`, credentials หรือเผยแพร่ log ที่มีข้อมูลอ่อนไหว
+
+### ตรวจบริการและ HTTPS โดยไม่แก้ config/ข้อมูล
+
+รันบน EC2 Ubuntu เครื่องเดิมโดยผู้ดูแล:
+
+```bash
+systemctl status smartvoice caddy postgresql --no-pager
+pg_lsclusters
+pg_isready -h 127.0.0.1 -p 5432
+curl --fail --silent --show-error --max-time 15 http://127.0.0.1:8501/_stcore/health
+curl --fail --silent --show-error --max-time 30 https://44-221-132-254.sslip.io/_stcore/health
+sudo journalctl -u smartvoice -u caddy -u postgresql -n 50 --no-pager
+```
+
+- SmartVoice และ Caddy ควรเป็น `active (running)`; health endpoint ควรตอบ `ok` คำสั่ง HTTPS ไม่ใช้ `-k` เพื่อให้ตรวจ certificate จริง และต้องเปิด URL จากเบราว์เซอร์นอก EC2 ด้วย เพราะการเรียกจากในเครื่องไม่ยืนยันเส้นทางของผู้ใช้ภายนอก
+- PostgreSQL บน Ubuntu อาจแสดง service รวมเป็น `active (exited)` ให้ดู cluster ที่ใช้งานจาก `pg_lsclusters` ว่า `online` และ `pg_isready` ว่า `accepting connections` (ปรับ port หากตั้งไว้ต่างจาก 5432) ผลนี้ยืนยันการรับ connection เท่านั้น ไม่ยืนยัน app credentials/schema/ความครบถ้วนของข้อมูล ต้องประกอบกับการ Login และอ่านข้อมูลผ่านแอป
+- หากมี error ให้ตรวจ log ของ cluster unit ที่ระบุจากเครื่องจริงเพิ่มเติม หาก localhost health ผ่านแต่ HTTPS ไม่ผ่าน ให้ตรวจโดเมน Caddy, DNS, certificate และการเข้าถึง 80/443; หาก localhost health ไม่ผ่าน ให้เริ่มจาก SmartVoice/PostgreSQL ไม่ควรแก้ DNS หรือ Deploy ใหม่ทันที
+- หากบริการหยุดหรือ failed ให้ผู้ดูแลหาสาเหตุก่อนเริ่มบริการตามขั้นตอนที่อนุมัติ ไม่ต้องรัน `install.sh`, migration หรือ restore เพื่อเปิด Lab ตามปกติ
+
+### รักษาโดเมนเมื่อ Deploy รุ่นใหม่
+
+ไฟล์ `/etc/caddy/Caddyfile` บน EC2 ถูกแก้ด้วยมือให้เป็น `44-221-132-254.sslip.io` ตามรายงานผู้ใช้ แต่ `deploy/aws-ec2/install.sh` สร้างไฟล์ใหม่จาก `Caddyfile.template` ด้วยค่า `--domain` แล้วติดตั้งทับไฟล์นี้ การแก้ด้วยมือจึงไม่ใช่ค่าที่ installer จะเก็บไว้ให้อัตโนมัติ
+
+ก่อน Deploy ที่ได้รับอนุมัติ ให้ผู้ดูแลสำรอง config เดิมอย่างปลอดภัย ตรวจ site address และ reverse proxy ใน Caddyfile แล้วตรวจคำสั่ง deploy ที่เตรียมไว้ว่าใช้ `--domain 44-221-132-254.sslip.io` โดยไม่ใส่ `https://` และไม่มี path (หากเปลี่ยนโดเมนภายหลังให้ใช้ค่าที่อนุมัติล่าสุด) อย่านำคำสั่งในประวัติที่มีโดเมนเก่ามารันตรง ๆ หลัง Deploy ต้องตรวจ Caddy และ HTTPS ที่ URL นี้ซ้ำ ขั้นตอนนี้เป็นข้อควรตรวจสำหรับอนาคต ไม่ใช่การสั่ง Deploy ในรอบเอกสารนี้
+
+**ข้อจำกัด:** Elastic IP คงที่ตราบใดที่ยังจัดสรรและผูกกับ EC2 ที่ถูกต้อง ไม่รับประกันว่าบริการหรือทรัพยากรจะอยู่ตลอดไป AWS Academy ไม่รับประกันการคงอยู่ของทรัพยากรระยะยาว; Lab/EC2 ที่หยุดยังทำให้เว็บหยุด แม้ IP ไม่เปลี่ยน และยังพึ่ง DNS ของ sslip.io กับ certificate ที่ใช้ได้ ผล Stop/Start ครั้งนี้ไม่แทน backup/restore, การตรวจคุณภาพ AI หรือ Production readiness คำเตือน IP อาจเปลี่ยนในหัวข้อเตรียม AWS ด้านล่างยังใช้กับกรณีที่ไม่มี Elastic IP หรือการจัดสรร/ผูก IP เปลี่ยนไป
+
 ## 0. ก่อนเริ่ม — ต้องตัดสินใจ/เตรียมให้เรียบร้อย
 
 | เรื่อง | ทำไมต้องรู้ก่อน |
