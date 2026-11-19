@@ -17,6 +17,7 @@ from smartvoice.ui_helpers import (
     metric_card,
     render_case_ownership,
     render_case_link_status,
+    retry_case_link_for_current_user,
     render_transcript,
     status_badge,
 )
@@ -740,9 +741,23 @@ else:
                                     for w in warrs
                                 }
                                 wsel = st.selectbox("เลือกทะเบียนรับประกัน (ถ้ามี)", ["— ไม่ระบุ —"] + list(warr_options.keys()), key=f"warr_sel_{call['id']}")
+                                plan = None
+                                if call["status"] == "done":
+                                    cases = db.get_open_cases_by_customer(cid)
+                                    options = {c["id"]: f"#{c['id']} {c['subject']}" for c in cases}
+                                    target = st.selectbox("จัดสายเข้าเคส", [None, *options],
+                                                          format_func=lambda key: options.get(key, "สร้างเคสใหม่"),
+                                                          key=f"case_sel_{call['id']}_{cid}")
+                                    plan = {"customer_id": cid, "action": "create"}
+                                    if target is not None:
+                                        plan.update(action="link", case_id=target)
                                 if st.button("เชื่อมข้อมูล", key=f"link_btn_{call['id']}"):
                                     wid = warr_options.get(wsel) if wsel != "— ไม่ระบุ —" else None
-                                    db.link_call_customer(call["id"], cid, wid, matched_by="manual")
+                                    try:
+                                        db.link_call_customer(call["id"], cid, wid, matched_by="manual", case_plan=plan)
+                                    except ValueError:
+                                        st.warning("ข้อมูลสายเปลี่ยนแล้ว กรุณาโหลดใหม่ก่อนเชื่อมข้อมูล")
+                                        st.stop()
                                     audit(
                                         audit_trail.UPDATE,
                                         audit_trail.ENTITY_CALL,
@@ -751,6 +766,8 @@ else:
                                         changes={"linked_customer_id": cid, "linked_warranty_id": wid},
                                     )
                                     _flash("success", "เชื่อมข้อมูลลูกค้าเรียบร้อยแล้ว")
+                                    if plan is not None:
+                                        st.session_state[f"_case_link_flash_{call['id']}"] = retry_case_link_for_current_user(call["id"])
                                     st.rerun()
 
                 # Case info

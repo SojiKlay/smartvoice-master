@@ -1437,7 +1437,7 @@ def process_call(call_id: int, step_callback=None) -> dict:
         conversation = _drop_adjacent_duplicate_segments(conversation)
 
         _step("🧹 [2/4] กำลังตรวจแก้บทถอดเสียงด้วย AI...")
-        conversation = ollama_client.cleanup_transcript(conversation)
+        conversation = ollama_client.cleanup_transcript(conversation, call_id=call_id, cleanup_pass=1)
         conversation = _sort_conversation(conversation)
         conversation = _split_opening_mixed_turns(conversation)
         conversation = _split_answer_prefixed_turns(conversation)
@@ -1478,7 +1478,7 @@ def process_call(call_id: int, step_callback=None) -> dict:
         conversation = _aggressive_relabel_from_strong_cues(conversation)
         conversation = _merge_adjacent_same_speaker(conversation)
         conversation = _enforce_role_rules(conversation)
-        conversation = ollama_client.cleanup_transcript(conversation)
+        conversation = ollama_client.cleanup_transcript(conversation, call_id=call_id, cleanup_pass=2)
         conversation = _sort_conversation(conversation)
         # Also pre-split long merged segments before the 2nd splitter pass so
         # the splitters (which rely on pattern matching at segment start/end)

@@ -189,13 +189,15 @@ class TestProcessCallStop(_DBCase):
             processing_control.check()
 
         with mock.patch.object(pipeline, "_transcribe_diarized", return_value=[]), \
-             mock.patch.object(pipeline.ollama_client, "cleanup_transcript", side_effect=lambda c: c), \
+             mock.patch.object(pipeline.ollama_client, "cleanup_transcript", side_effect=lambda c, **kwargs: c) as cleanup, \
              mock.patch.object(pipeline.ollama_client, "correct_speakers", side_effect=lambda c: c), \
              mock.patch.object(pipeline.ollama_client, "analyze_transcript", return_value=dict(_ANALYSIS)), \
              mock.patch.object(pipeline, "_auto_assign_case", side_effect=assign_case_then_llm) as assign:
             pipeline.process_call(cid)
 
         assign.assert_called_once()
+        self.assertEqual([call.kwargs for call in cleanup.call_args_list],
+                         [{"call_id": cid, "cleanup_pass": 1}, {"call_id": cid, "cleanup_pass": 2}])
         self.assertEqual(db.get_call_by_id(cid)["status"], "done")
 
 

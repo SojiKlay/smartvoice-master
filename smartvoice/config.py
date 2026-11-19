@@ -61,4 +61,5 @@ def api_settings() -> dict:
         "timeout": max(1, _get_int("AI_API_TIMEOUT", "120")),
         "job_timeout": max(1, _get_int("AI_JOB_TIMEOUT", "1800")),
         "max_tokens": max(256, _get_int("TYPHOON_MAX_TOKENS", "4096")),
+        "cleanup_chunk_chars": max(1, _get_int("TYPHOON_CLEANUP_CHUNK_CHARS", "3200")),
     }

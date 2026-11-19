@@ -1094,9 +1094,29 @@ def auto_link_call_by_phone(call_id: int, phone: str) -> dict | None:
 def link_call_customer(
     call_id: int, customer_id: int,
     warranty_id: int = None, matched_by: str = "manual",
+    *, case_plan: dict | None = None,
 ) -> int:
     now = _now()
     with _locked_case_link(call_id) as (conn, call):
+        links = conn.execute("SELECT id, customer_id, warranty_id FROM call_customer_links WHERE call_id=? ORDER BY id",
+                             (call_id,)).fetchall()
+        if case_plan is not None:
+            if (not _valid_case_link_plan(case_plan) or case_plan["customer_id"] != customer_id
+                    or call["status"] != "done" or any(row["customer_id"] != customer_id for row in links)):
+                raise ValueError("invalid_manual_case_plan")
+            if warranty_id is not None and not conn.execute(
+                "SELECT id FROM warranty_registrations WHERE id=? AND customer_id=? AND deleted_at IS NULL",
+                (warranty_id, customer_id),
+            ).fetchone():
+                raise ValueError("invalid_manual_case_plan")
+            if case_plan["action"] == "link" and not conn.execute(
+                "SELECT id FROM cases WHERE id=? AND customer_id=? AND status IN ('open','follow_up')",
+                (case_plan["case_id"], customer_id),
+            ).fetchone():
+                raise ValueError("invalid_manual_case_plan")
+        for row in links:
+            if row["customer_id"] == customer_id and row["warranty_id"] == warranty_id:
+                return row["id"]
         cur = conn.execute(
             """INSERT INTO call_customer_links
                (call_id, customer_id, warranty_id, matched_by, created_at)
@@ -1104,7 +1124,8 @@ def link_call_customer(
             (call_id, customer_id, warranty_id, matched_by, now),
         )
         if call["status"] == "done" and call["case_id"] is None:
-            conn.execute("UPDATE calls SET case_link_plan=NULL, case_link_status='pending', case_link_error=NULL, case_link_updated_at=? WHERE id=?", (now, call_id))
+            conn.execute("UPDATE calls SET case_link_plan=?, case_link_status='pending', case_link_error=NULL, case_link_updated_at=? WHERE id=?",
+                         (json.dumps(case_plan, sort_keys=True) if case_plan else None, now, call_id))
         return cur.lastrowid
 
 

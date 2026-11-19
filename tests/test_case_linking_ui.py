@@ -166,6 +166,21 @@ def test_admin_page_displays_case_link_warning(linking_db):
     assert any(button.label == "ลองจัดเคสอีกครั้ง" for button in app.button)
 
 
+def test_supervisor_links_completed_call_from_admin_page(linking_db):
+    _, customer = linking_db
+    call = db.insert_call("late.wav", "late-ui", "")
+    db.update_call_results(call, "test", "test", "neutral", "สอบถาม")
+    app = signed_app(call, "Supervisor", "pages/1_📤_Admin.py").run()
+    picker = app.selectbox(key=f"cust_sel_{call}")
+    picker.select(picker.options[1]).run()
+    app.button(key=f"link_btn_{call}").click().run()
+    assert not app.exception
+    saved = db.get_call_by_id(call)
+    assert saved["case_link_status"] == "linked"
+    assert db.get_case_by_id(saved["case_id"])["customer_id"] == customer
+    assert records(call)[-1]["changes"]["result"] == "linked"
+
+
 def test_call_summaries_dialog_displays_warning_and_retries(linking_db, monkeypatch):
     call, customer = linking_db
     prepare(call, customer)

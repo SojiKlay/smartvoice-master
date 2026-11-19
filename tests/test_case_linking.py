@@ -195,6 +195,41 @@ def test_completed_plan_cannot_recreate_a_lost_link(linking_db):
     assert len(db.get_cases_by_customer(customer)) == 1
 
 
+@pytest.mark.parametrize("existing", [False, True])
+def test_late_manual_match_and_repeated_link(linking_db, existing):
+    _, customer = linking_db
+    call = db.insert_call("late.wav", "late", "")
+    db.update_call_results(call, "test", "test", "neutral", "ติดตาม")
+    assert db.auto_link_call_by_phone(call, "DEMO-MISMATCH") is None
+    assert db.retry_case_link(call) == "not_required"
+    db.update_customer(customer, phone="DEMO-MATCH")
+    assert db.get_customer_by_phone("DEMO-MATCH")["id"] == customer
+    plan = {"action": "create", "customer_id": customer}
+    if existing:
+        plan.update(action="link", case_id=db.create_case(customer, "Existing"))
+    link = db.link_call_customer(call, customer, case_plan=plan)
+    assert db.retry_case_link(call) == "linked"
+    assert db.link_call_customer(call, customer, case_plan=plan) == link
+    assert db.retry_case_link(call) == "linked"
+    assert len(db.get_cases_by_customer(customer)) == 1
+    if existing:
+        assert db.get_call_by_id(call)["case_id"] == plan["case_id"]
+
+
+@pytest.mark.parametrize("wrong", ["warranty", "case"])
+def test_reject_cross_customer_manual_target_before_link(linking_db, wrong):
+    _, customer = linking_db
+    other = db.insert_customer("Other", "Demo")
+    call = db.insert_call("late.wav", "late-invalid", "")
+    db.update_call_results(call, "test", "test", "neutral", "ติดตาม")
+    warranty = db.insert_warranty("DEMO-W", other if wrong == "warranty" else customer)
+    target = db.create_case(other if wrong == "case" else customer, "Demo")
+    with pytest.raises(ValueError, match="invalid_manual_case_plan"):
+        db.link_call_customer(call, customer, warranty, case_plan={"action": "link", "customer_id": customer, "case_id": target})
+    assert db.get_call_customer_link(call) is None
+    assert db.get_call_by_id(call)["case_link_status"] == "not_required"
+
+
 def test_existing_case_update_rolls_back_when_link_fails(linking_db):
     call, customer = linking_db
     case = db.create_case(customer, "Existing")

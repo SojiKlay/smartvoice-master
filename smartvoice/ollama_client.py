@@ -1,14 +1,22 @@
 import json
 import re
+from difflib import SequenceMatcher
+from typing import NamedTuple
+
 import requests
 
 from smartvoice import insight_rules, processing_control
 from smartvoice.config import api_settings
 from smartvoice.logger import get_logger
+from smartvoice.prompts import build_transcript_cleanup_prompt
 
 log = get_logger(__name__)
 
 class APIError(RuntimeError):
+    pass
+
+
+class IncompleteCompletion(APIError):
     pass
 
 
@@ -54,12 +62,20 @@ def _chat_typhoon(system_prompt: str, user_prompt: str, temperature: float, sett
         raise APIError(f"Typhoon API HTTP {response.status_code}; check key, quota and model")
     processing_control.check()
     try:
-        choice = response.json()["choices"][0]
+        payload = response.json()
+        choice = payload["choices"][0]
+        usage = payload.get("usage")
+        if isinstance(usage, dict):
+            counts = [usage.get(key) for key in ("prompt_tokens", "completion_tokens")]
+            log.info("Typhoon prompt_tokens=%s completion_tokens=%s max_tokens=%d",
+                     *(n if type(n) is int else "unknown" for n in counts), settings["max_tokens"])
         if choice.get("finish_reason") == "length":
-            raise APIError("Typhoon output truncated; increase TYPHOON_MAX_TOKENS")
+            raise IncompleteCompletion("Typhoon output truncated")
+        if choice.get("finish_reason") != "stop":
+            raise IncompleteCompletion("Typhoon completion did not finish normally")
         content = choice["message"]["content"]
         if not isinstance(content, str) or not content.strip():
-            raise ValueError("empty content")
+            raise IncompleteCompletion("Typhoon API returned an invalid completion")
         return content
     except (ValueError, KeyError, IndexError, TypeError):
         raise APIError("Typhoon API returned an invalid completion") from None
@@ -165,56 +181,131 @@ def correct_speakers(conversation: list[dict]) -> list[dict]:
         return conversation
 
 
-def cleanup_transcript(conversation: list[dict]) -> list[dict]:
-    """Use LLM to fix garbled/hallucinated text from STT."""
-    from smartvoice.prompts import build_transcript_cleanup_prompt
+class _CleanupRow(NamedTuple):
+    index: int
+    start: int
+    end: int
+    prefix: str
+    line: str
 
+
+def _cleanup_spans(text: str, width: int):
+    for line in re.finditer(r"[^\r\n]+", text):
+        start = end = None
+        for word in re.finditer(r"\S+", line.group()):
+            left, right = line.start() + word.start(), line.start() + word.end()
+            if start is not None and right - start > width:
+                yield start, end
+                start = None
+            if start is None:
+                start = left
+            end = right
+        if start is not None:
+            yield start, end
+
+
+def _cleanup_chunks(conversation: list[dict], budget: int):
+    chunk = []
+    size = 0
+    for idx, item in enumerate(conversation):
+        text = item.get("text") or ""
+        prefix = f"[{idx}] {item.get('speaker', 'Unknown')}: "
+        for start, end in _cleanup_spans(text, budget - len(prefix)):
+            row = prefix + text[start:end]
+            if chunk and (size + 1 + len(row) > budget or chunk[-1].index == idx):
+                yield chunk
+                chunk = []
+                size = 0
+            size += len(row) + (1 if chunk else 0)
+            chunk.append(_CleanupRow(idx, start, end, prefix, row))
+    if chunk:
+        yield chunk
+
+
+_NOISE_LABEL = re.compile(r"\[(?:noise|background noise|เสียงรบกวน|เสียงซ่า)\]", re.IGNORECASE)
+_PROTECTED_TERMS = re.compile(r"\d+|ไม่|ห้าม|อย่า(?!ง)|\b(?:no|not|never)\b", re.IGNORECASE)
+
+
+def _cleanup_replacement(source: str, value: str) -> str | None:
+    if value == source:
+        return value
+    speech = _NOISE_LABEL.sub("", source).strip()
+    if not value or value in ("<REMOVE>", "[REMOVE]", "REMOVE"):
+        return None if speech else ""
+    if _PROTECTED_TERMS.findall(speech) != _PROTECTED_TERMS.findall(value):
+        return None
+    words = speech.split()
+    kept = value.split()
+    if len(kept) < len(words):
+        remaining_words = iter(words)
+        if all(word in remaining_words for word in kept):
+            return None
+    if len(speech) >= 80:
+        return value if insight_rules.split_keeps_text([value], speech) else None
+    original = "".join(speech.split())
+    cleaned = "".join(value.split())
+    if original == cleaned:
+        return value
+    matches = SequenceMatcher(None, original, cleaned, autojunk=False).get_matching_blocks()
+    matched = sum(block.size for block in matches)
+    tolerance = 1 if len(original) < 12 else 2
+    if matched >= 2 and max(len(cleaned), len(original)) - matched <= tolerance:
+        return value
+    return None
+
+
+def cleanup_transcript(conversation: list[dict], *, call_id: int | None = None,
+                       cleanup_pass: int | None = None) -> list[dict]:
+    """Use LLM to fix garbled/hallucinated text from STT."""
     if not conversation:
         return conversation
 
+    settings = api_settings()
+    budget = min(settings["cleanup_chunk_chars"], settings["max_tokens"])
+
     # Build indexed text for the LLM
-    conversation_text = "\n".join(
-        f"[{i}] {item.get('speaker', 'Unknown')}: {item.get('text', '')}"
-        for i, item in enumerate(conversation)
-        if item.get("text")
-    )
+    edits: dict[int, list[tuple[int, int, str]]] = {}
+    for index, chunk in enumerate(_cleanup_chunks(conversation, budget), start=1):
+        context = (call_id, cleanup_pass, index)
+        if len(chunk[0].line) > budget:
+            log.warning("Cleanup kept oversized span call_id=%s cleanup_pass=%s chunk_index=%d", *context)
+            continue
+        system, user = build_transcript_cleanup_prompt("\n".join(row.line for row in chunk))
+        try:
+            lines = _normalize_llm_output(chat(system, user)).splitlines()
+        except IncompleteCompletion:
+            log.warning("Cleanup kept source for incomplete completion call_id=%s cleanup_pass=%s chunk_index=%d", *context)
+            continue
+        except APIError:
+            log.warning("Cleanup request failed call_id=%s cleanup_pass=%s chunk_index=%d", *context)
+            raise
 
-    system, user = build_transcript_cleanup_prompt(conversation_text)
-    try:
-        raw = _normalize_llm_output(chat(system, user))
-        cleaned_map: dict[int, str | None] = {}
-        for line in raw.strip().splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            m = re.match(r"\[(\d+)\]\s*[^:]+:\s*(.*)", line)
-            if m:
-                idx = int(m.group(1))
-                text = m.group(2).strip()
-                if text in ("<REMOVE>", "[REMOVE]", "REMOVE"):
-                    cleaned_map[idx] = None
-                else:
-                    cleaned_map[idx] = text
+        replacements = []
+        for line, row in zip(lines, chunk):
+            if not line.startswith(row.prefix):
+                break
+            source = conversation[row.index]["text"][row.start:row.end]
+            value = _cleanup_replacement(source, line[len(row.prefix):].strip())
+            if value is None:
+                break
+            replacements.append(value)
+        if len(lines) != len(chunk) or len(replacements) != len(chunk):
+            log.warning("Cleanup kept source for unverified response call_id=%s cleanup_pass=%s chunk_index=%d", *context)
+            continue
 
-        if not cleaned_map:
-            return conversation
+        for row, value in zip(chunk, replacements):
+            edits.setdefault(row.index, []).append((row.start, row.end, value))
 
-        result = []
-        for i, item in enumerate(conversation):
-            if i in cleaned_map and cleaned_map[i] is None:
-                continue
-            new_item = dict(item)
-            if i in cleaned_map and cleaned_map[i]:
-                new_item["text"] = cleaned_map[i]
-            result.append(new_item)
-        return result
-    except APIError:
-        raise
-    except Exception:
-        if api_settings()["llm_provider"] == "typhoon":
-            raise APIError("Typhoon response could not be processed; no default analysis was saved") from None
-        log.exception("cleanup_transcript failed — returning original conversation")
-        return conversation
+    result = [dict(item) for item in conversation]
+    for idx, spans in edits.items():
+        text = conversation[idx]["text"]
+        pieces = []
+        cursor = 0
+        for start, end, value in spans:
+            pieces.extend((text[cursor:start], value))
+            cursor = end
+        result[idx]["text"] = "".join(pieces) + text[cursor:]
+    return result
 
 
 # ~7k tokens of Thai; with the longest prompt this stays inside _num_ctx().

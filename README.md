@@ -155,6 +155,16 @@ run.bat
 
 ## Developer Setup
 
+### เปิดเดโม Omazz ในเครื่อง
+
+จาก root ของ checkout ใช้ PowerShell เปิดแอปพร้อมข้อมูลสาธิตที่สัมพันธ์กันใน SQLite แยก
+
+```powershell
+& .venv\Scripts\python.exe scripts\seed_mock_data.py --demo-dir "$env:LOCALAPPDATA\SmartVoice\smartvoice-demo" --serve
+```
+
+ครั้งแรกให้ตั้งรหัสผ่านเดโมที่ prompt แล้วเข้าด้วย `demo_admin`, `demo_supervisor`, `demo_qa` หรือ `demo_agent` ใช้รหัสที่ตั้งเดียวกันทั้งสี่บัญชี โปรแกรมเปิดเฉพาะ loopback และปิดการโหลด .env ของ checkout ข้อมูลมี 3 สายจำลอง, 2 ลูกค้า, 2 ทะเบียน, 2 เคส และ 2 ใบสั่งขายพร้อมรายการสินค้า สาธิตได้โดยไม่ต้องประมวลผลเสียงหรือใส่ API key รันคำสั่งเดิมเพื่อใช้ข้อมูลเดิม หากต้องการคืนข้อมูลตั้งต้น ให้ปิดเดโมแล้วเพิ่ม `--reset` และตั้งรหัสใหม่ การ reset มีผลกับการแก้ไขในฐานเดโมนั้น
+
 ใช้ Git และ Python 3.10–3.12 (แนะนำ 3.12 ตามสภาพแวดล้อม EC2) คำสั่งด้านล่างเป็น PowerShell เปิด terminal ใหม่โดยตั้ง working directory เป็น root ของ clone ผ่าน IDE ก่อนรันคำสั่งติดตั้ง
 
 ### 1. Clone และแยก Branch

@@ -32,7 +32,7 @@ $env:TEMP=Join-Path $PWD '.pytest_cache/temp'; $env:TMP=$env:TEMP
 streamlit run Home.py       # → http://localhost:8501
 
 # Seed mock data
-& ".venv\Scripts\python.exe" scripts\seed_mock_data.py
+& ".venv\Scripts\python.exe" scripts\seed_mock_data.py --demo-dir "$env:LOCALAPPDATA\SmartVoice\smartvoice-demo" --serve
 
 # Consistent, integrity-checked DB snapshot (read-only on the live DB) → data\backups\smartvoice-<UTC>.db
 & ".venv\Scripts\python.exe" scripts\backup_db.py [--out data\backups] [--keep 14]

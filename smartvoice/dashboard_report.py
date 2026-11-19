@@ -17,6 +17,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import re
 import unicodedata
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
@@ -224,6 +225,35 @@ def build_report(calls: list[dict], filter_text: str = "", generated_at: datetim
 
 # ── CSV ──────────────────────────────────────────────────────────────────
 
+def business_insights(report: Report) -> list[str]:
+    if not report.total:
+        return ["ข้อมูลครอบคลุม 0 สายตามตัวกรอง ยังไม่มีหลักฐานสำหรับจัดลำดับงาน"]
+    covered = sum(count for _, count in report.sentiment)
+    lines = [
+        f"พบ {report.issue_call_count} จาก {report.total} สายที่มีอารมณ์เชิงลบหรือถูกระบุว่าผิดปกติ",
+        f"ความครอบคลุม: มีผลอารมณ์ {covered} จาก {report.total} สายตามตัวกรอง นับรายสาย ลูกค้าคนเดิมอาจโทรหลายครั้ง",
+    ]
+    high = report.severity_counts.get("high", 0)
+    if report.total == 1:
+        lines.append("มีเพียงหนึ่งสาย ควรตรวจรายกรณีก่อนสรุปเป็นแนวโน้ม")
+    if high:
+        lines.append(f"เร่งด่วน: พบความผิดปกติระดับสูง {high} สาย ให้หัวหน้าศูนย์บริการตรวจหลักฐานรายสายก่อนส่งต่อ ติดตามจำนวนสายระดับสูงที่ตรวจแล้วจาก {high} สาย")
+    if report.top_issues:
+        topic, count = report.top_issues[0]
+        owner = {"แจ้งปัญหาสินค้า": "ฝ่ายคุณภาพสินค้า", "สอบถามการจัดส่ง": "ฝ่ายจัดส่ง"}.get(topic, "ฝ่ายบริการลูกค้า")
+        lines.extend([
+            f"ประเด็นที่ควรตรวจ: {topic} พบ {count} จาก {report.issue_call_count} สายเชิงลบหรือผิดปกติ",
+            f"สมมติฐานที่ต้องตรวจ: ขั้นตอนติดตามเรื่อง {topic} อาจยังไม่ตอบข้อกังวลของลูกค้า ให้ {owner} เทียบเนื้อหาสายกับประวัติเคสก่อนสรุปสาเหตุ",
+            f"ลำดับถัดไป: ให้ {owner} ทบทวนสายกลุ่มนี้ ติดตามสัดส่วนสายหัวข้อนี้ต่อสายเชิงลบหรือผิดปกติในช่วงถัดไปด้วยตัวกรองเดียวกัน",
+        ])
+    else:
+        lines.append("ฝ่ายบริการลูกค้าควรติดตามจำนวนสายเชิงลบหรือผิดปกติในช่วงถัดไป ข้อมูลชุดนี้ยังระบุหัวข้อที่ต้องแก้ก่อนหรือสาเหตุไม่ได้")
+    if report.low_score_calls:
+        scored = int(report.agents["จำนวนสาย"].sum())
+        lines.append(f"จาก {scored} สายที่มีคะแนน พบ {report.low_score_calls} สายได้ต่ำกว่า 6/10 ให้ฝ่ายควบคุมคุณภาพทบทวนหลักฐานและติดตามสัดส่วนนี้ในรอบถัดไป")
+    return lines
+
+
 def _safe_cell(value):
     """Stop Excel reading text from a call (or the LLM) as a formula.
 
@@ -231,8 +261,9 @@ def _safe_cell(value):
     """
     if not isinstance(value, str) or not value:
         return value
-    risky = value[0] in ("=", "+", "@", "\t", "\r") or (
-        value[0] == "-" and len(value) > 1 and not value[1].isdigit()
+    cell = value.lstrip()
+    risky = value.startswith(("\t", "\r", "\n")) or cell.startswith(("=", "+", "@")) or (
+        cell.startswith("-") and cell != "-" and not re.fullmatch(r"-\d+(?:\.\d+)?", cell)
     )
     return "'" + value if risky else value
 
@@ -617,6 +648,10 @@ def pdf_report(report: Report, font: tuple[str, str | None] | None = None) -> by
         (f"{report.team_average:.1f}/10" if report.team_average is not None else "-",
          "คะแนนพนักงานเฉลี่ย", _BRAND),
     ])
+
+    w.heading("สรุปผู้บริหารและข้อเสนอเพื่อดำเนินการ")
+    for finding in business_insights(report):
+        w.paragraph(finding)
 
     w.heading("อารมณ์ลูกค้า")
     w.bars(report.sentiment, colors=_SENTIMENT_RGB, total=report.total)

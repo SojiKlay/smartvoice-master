@@ -13,6 +13,23 @@ import pytest
 from smartvoice import dashboard_report as dr
 
 NOW = datetime(2026, 10, 16, 3, 0, tzinfo=timezone.utc)
+
+
+def test_insight_coverage_and_evidence_without_network(monkeypatch):
+    monkeypatch.setattr("requests.sessions.Session.request", lambda *a, **kw: pytest.fail("Unexpected API call"))
+    assert "0 สาย" in " ".join(dr.business_insights(dr.build_report([])))
+    report = dr.build_report([_call(1, sentiment="negative", topic="แจ้งปัญหาสินค้า", agent_performance="{broken"),
+                              _call(2, sentiment=None, topic=None)])
+    lines = " ".join(dr.business_insights(report))
+    assert all(term in lines for term in ("1 จาก 2", "แจ้งปัญหาสินค้า", "สมมติฐาน", "ฝ่าย", "ติดตาม"))
+    assert "หนึ่งสาย" in " ".join(dr.business_insights(dr.build_report([_call(1)])))
+    if dr.find_thai_font():
+        assert dr.pdf_report(report).startswith(b"%PDF")
+
+
+@pytest.mark.parametrize("value", ["-1+2", "  =SUM(A1)", "\n@x"])
+def test_csv_protects_disguised_formulas(value):
+    assert dr._safe_cell(value).startswith("'")
 NO_SPACE = "ลูกค้าแจ้งว่าที่นอนมีกลิ่นเหม็นและมีผื่นคันหลังจากนอนไปสองคืนต้องการให้บริษัทตรวจสอบโดยเร็ว" * 3
 
 
