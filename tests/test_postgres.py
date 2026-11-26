@@ -4,6 +4,7 @@ import sqlite3
 import subprocess
 import uuid
 from concurrent.futures import ThreadPoolExecutor
+from unittest.mock import MagicMock
 from urllib.parse import urlsplit
 
 import pytest
@@ -18,13 +19,39 @@ def postgres(monkeypatch):
     if not url:
         pytest.skip("isolated PostgreSQL test database not configured")
     parsed = urlsplit(url)
-    assert parsed.hostname in {"127.0.0.1", "localhost"} and parsed.path == "/smartvoice_test"
+    assert parsed.hostname in {"127.0.0.1", "localhost"} and not parsed.query
+    assert parsed.path in {"/smartvoice_test", "/smartvoice_test_uxui"}
     database_backend.migrate(url)
     monkeypatch.setenv("DATABASE_URL", url)
     with database_backend.connect(url) as conn:
         conn.execute("TRUNCATE calls, customers, warranty_registrations, call_customer_links, cases, users, audit_log, sales_orders, sales_order_lines RESTART IDENTITY CASCADE")
     db.init_db()
     return url
+
+
+@pytest.mark.parametrize("target,allowed", [
+    ("localhost/smartvoice_test", True),
+    ("127.0.0.1/smartvoice_test_uxui", True),
+    ("localhost/smartvoice_test_uxui_old", False),
+    ("localhost/business", False),
+    ("remote.invalid/smartvoice_test_uxui", False),
+    ("localhost/smartvoice_test_uxui?dbname=business", False),
+])
+def test_fixture_target_guard(monkeypatch, target, allowed):
+    url = f"postgresql://{target}"
+    monkeypatch.setenv("SMARTVOICE_TEST_POSTGRES_URL", url)
+    operations = MagicMock()
+    monkeypatch.setattr(database_backend, "migrate", operations.migrate)
+    monkeypatch.setattr(database_backend, "connect", operations.connect)
+    monkeypatch.setattr(db, "init_db", operations.init_db)
+    if allowed:
+        assert postgres.__wrapped__(monkeypatch) == url
+        operations.migrate.assert_called_once_with(url)
+        operations.connect.assert_called_once_with(url)
+    else:
+        with pytest.raises(AssertionError):
+            postgres.__wrapped__(monkeypatch)
+        assert not operations.mock_calls
 
 
 def test_postgres_customer_warranty_and_soft_delete_contract(postgres):
