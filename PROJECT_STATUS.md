@@ -1,5 +1,10 @@
 # SmartVoice — สถานะสำหรับพัฒนาต่อ
 
+## ตรวจรับ UX/UI ฟอร์มลูกค้า ทะเบียนรับประกัน และใบสั่งขาย (27 พฤศจิกายน 2026)
+
+- Regression ชุดเต็มบน Windows ใช้ SQLite ทดสอบแยกและ Mock API ผ่าน 769 ล้มเหลว 0 ข้าม 17 ใน 77.42 วินาที ทั้ง 17 กรณีต้องใช้ฐาน PostgreSQL ทดสอบแยกซึ่งยังไม่ได้ตั้งค่า
+- รอบก่อนพบ `WinError 5` ขณะแทนที่ไฟล์ checkpoint ชั่วคราวใน `test_pipeline_api_failure_keeps_audio_and_hides_incomplete_results[invalid_json]` ก่อนถึงขั้นตรวจ JSON เมื่อรันกรณีเดิมแยกผ่าน 3/3 ครั้ง และผ่านในชุดเต็มรอบล่าสุดโดยคงโค้ดและเทสต์เดิม ยังระบุสาเหตุของการปฏิเสธสิทธิ์ครั้งนั้นไม่ได้
+
 ## AWS Academy EC2 — Deploy และตรวจรับหลังอัปเดต (24 พฤศจิกายน 2026)
 
 **สถานะ: Deployment completed; functional validation partially completed; ไม่ใช่ Production Ready.** ข้อมูลส่วนนี้บันทึกจากคำสั่ง Terminal และภาพหน้าจอที่ผู้ใช้ส่งในการสนทนา ไม่ใช่การรันตรวจสอบ AWS โดยตัวแก้เอกสารโดยตรง

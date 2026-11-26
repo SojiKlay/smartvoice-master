@@ -205,7 +205,8 @@ def parse_date(value) -> str | None:
 
 
 _PARSERS = {"text": parse_text, "phone": parse_phone, "number": parse_number, "date": parse_date}
-_KIND_HINT = {"number": "ตัวเลข", "date": "วันที่ (วว/ดด/ปปปป)"}
+SO_NUMBER_HELP = "ใช้ตัวอักษรอังกฤษ ตัวเลข หรือเครื่องหมาย . _ - / รวมอย่างน้อย 2 ตัวอักษร เช่น SO-001"
+_KIND_HINT = {"number": "ตัวเลข กรุณากรอกเป็นจำนวน เช่น 1250.50", "date": "วันที่ที่ถูกต้อง กรุณาระบุวัน/เดือน/ปี เช่น 25/11/2026"}
 
 
 # ── Import ───────────────────────────────────────────────────────────────
@@ -286,7 +287,7 @@ def parse_import(df: pd.DataFrame) -> ImportResult:
             result.errors.append(f"แถว {excel_row}: ไม่มีเลขที่ SO")
             continue
         if not _SO_NUMBER_RE.match(so_number):
-            result.errors.append(f"แถว {excel_row}: เลขที่ SO “{so_number}” มีอักขระที่ใช้ไม่ได้")
+            result.errors.append(f"แถว {excel_row}: กรุณาแก้เลขที่ SO “{so_number}” — {SO_NUMBER_HELP}")
             continue
         result.errors.extend(f"แถว {excel_row}: {msg}" for msg in bad)
 
@@ -445,9 +446,9 @@ def save_manual(
             return None, f"{spec.label} “{header.get(key)}” ไม่ใช่{_KIND_HINT.get(spec.kind, 'ค่าที่ถูกต้อง')}"
     so_number = values.get("so_number")
     if not so_number:
-        return None, "กรุณากรอกเลขที่ SO"
+        return None, "ช่องเลขที่ SO ยังว่าง กรุณากรอกเลขที่ใบสั่งขาย เช่น SO-001"
     if not _SO_NUMBER_RE.match(so_number):
-        return None, "เลขที่ SO ใช้ได้เฉพาะ A-Z 0-9 . _ - / และยาวอย่างน้อย 2 ตัวอักษร"
+        return None, f"กรุณาแก้เลขที่ SO — {SO_NUMBER_HELP}"
     line_rows, errors = clean_lines(lines)
     if errors:
         return None, errors[0]
@@ -457,7 +458,7 @@ def save_manual(
     if so_id and not before:
         return None, "ไม่พบ SO นี้แล้ว"
     if existing and (not before or existing["id"] != before["id"]):
-        state = " (ถูกซ่อนไว้ — กู้คืนแทนการสร้างใหม่)" if existing.get("deleted_at") else ""
+        state = " — กู้คืนใบเดิมที่แท็บ SO ที่ซ่อนไว้" if existing.get("deleted_at") else " — เลือกแก้ไข SO ที่มีอยู่ หรือตรวจเลขที่สำหรับใบใหม่"
         return None, f"เลขที่ SO `{so_number}` มีอยู่แล้ว{state}"
     if before and before["so_number"] != so_number:
         return None, "เปลี่ยนเลขที่ SO ไม่ได้ — สร้าง SO ใหม่แทน"

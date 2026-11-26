@@ -185,27 +185,94 @@ def test_customer_form_phone_guidance_matches_validation(temp_db):
     app = _signed_in(AppTest.from_file("pages/6_➕_Data_Entry.py", default_timeout=30)).run()
     fields = {field.label: field for field in app.text_input}
     assert "9–10 หลัก" in fields["เบอร์โทร"].proto.help
+    assert any("เชื่อม" in c.value and "9–10 หลัก" in c.value for c in app.caption)
     fields["ชื่อ *"].input("สมชาย")
     fields["นามสกุล *"].input("ใจดี")
     fields["เบอร์โทร"].input("123")
     next(button for button in app.button if button.label == "บันทึกลูกค้า").click().run()
     assert any("9-10 หลัก" in error.value for error in app.error)
+    assert next(field for field in app.text_input if field.label == "ชื่อ *").value == "สมชาย"
     next(field for field in app.text_input if field.label == "เบอร์โทร").input("0812345678")
     next(button for button in app.button if button.label == "บันทึกลูกค้า").click().run()
     assert not app.exception and db.get_customer_by_phone("0812345678")
     assert any("3 ตัวอักษร" in field.proto.help for field in app.text_input if field.label == "เลขทะเบียนรับประกัน *")
 
 
+def test_edit_customer_keeps_draft_after_duplicate_phone(temp_db):
+    customer = db.insert_customer("สมชาย", "ใจดี", phone="0811111111")
+    db.insert_customer("มาลี", "สุขใจ", phone="0822222222")
+    app = _signed_in(AppTest.from_file("pages/6_➕_Data_Entry.py", default_timeout=30)).run()
+    app.text_input(key="_edit_c_search").input("0811111111").run()
+    form_id = f"_edit_customer_form_{customer}"
+
+    def field(label):
+        return next(w for w in app.text_input if w.proto.form_id == form_id and w.label == label)
+
+    def save():
+        next(b for b in app.button if b.proto.form_id == form_id).click().run()
+
+    field("ชื่อ *").input("สมศรี")
+    field("เบอร์โทร").input("0822222222")
+    save()
+    assert any("เว้นว่าง" in e.value and "0822222222" in e.value for e in app.error)
+    assert field("ชื่อ *").value == "สมศรี" and field("เบอร์โทร").value == "0822222222"
+    assert db.get_customer_by_id(customer)["first_name"] == "สมชาย"
+    field("เบอร์โทร").input("")
+    save()
+    saved = db.get_customer_by_id(customer)
+    assert not app.exception and saved["first_name"] == "สมศรี" and not saved["phone"]
+
+
+@pytest.mark.parametrize("editing", [False, True])
+def test_warranty_form_keeps_draft_until_number_is_corrected(temp_db, editing):
+    owner = db.insert_customer("สมชาย", "ใจดี")
+    wid = db.insert_warranty(customer_id=owner, registration_no="REG-001")
+    app = _signed_in(AppTest.from_file("pages/6_➕_Data_Entry.py", default_timeout=30)).run()
+    prefix = f"_warranty_{wid}_" if editing else "_warranty_new_"
+    submit = f"_save_w_{wid}" if editing else "_save_w_new"
+    owner_picker = app.selectbox(key=prefix + "owner")
+    if not editing:
+        assert owner_picker.value is None
+        owner_picker.select_index(0).run()
+    assert next(w for w in app.get("file_uploader") if w.proto.id.endswith(prefix + "proof")).proto.max_upload_size_mb == file_manager.MAX_PROOF_SIZE_MB
+    assert app.checkbox(key=prefix + "auto").value == (not editing)
+    headings = [item.value for item in app.markdown]
+    for heading in ("ข้อมูลเจ้าของทะเบียน", "ข้อมูลสินค้า (ไม่บังคับ)", "เอกสารอ้างอิง (ไม่บังคับ)", "เงื่อนไขการรับประกัน (ไม่บังคับ)"):
+        assert headings.count(f"**{heading}**") == 2
+    app.date_input(key=prefix + "date_of_purchase").set_value(date(2026, 1, 31))
+    app.number_input(key=prefix + "months").set_value(1)
+    if editing:
+        app.date_input(key=prefix + "expiry").set_value(date(2026, 3, 1))
+    app.text_input(key=prefix + "serial_no").input("SN-TEST")
+    app.text_input(key=prefix + "registration_no").input("X" if editing else "REG-001")
+    app.button(key=submit).click().run()
+    assert not app.exception and any("เลขทะเบียน" in error.value for error in app.error)
+    assert app.text_input(key=prefix + "serial_no").value == "SN-TEST"
+    assert not db.get_warranty_by_id(wid)["serial_no"]
+    app.text_input(key=prefix + "registration_no").input("REG-002")
+    app.button(key=submit).click().run()
+    saved = db.get_warranty_by_registration("REG-002")
+    assert not app.exception and saved["serial_no"] == "SN-TEST" and saved["customer_id"] == owner
+    assert (saved["id"] == wid) == editing
+    assert saved["expiry_date"] == ("2026-03-01" if editing else "2026-02-28")
+
+
 def test_so_form_number_guidance_matches_validation(temp_db):
     app = _signed_in(AppTest.from_file("pages/13_Sales_Orders.py", default_timeout=30)).run()
     number_key = "_so_so_number_new"
     assert "2 ตัวอักษร" in app.text_input(key=number_key).proto.help
+    assert any("เลขที่ SO" in c.value and "เปลี่ยนเลขเดิมไม่ได้" in c.value for c in app.caption)
+    app.text_input(key="_so_customer_po_no_new").input("PO-075")
+    app.text_area(key="_so_remark_new").input("โทรก่อนส่ง")
     app.text_input(key=number_key).input("X")
     app.button(key="_so_save_new").click().run()
     assert any("2 ตัวอักษร" in error.value for error in app.error)
+    assert app.text_input(key="_so_customer_po_no_new").value == "PO-075"
+    assert app.text_area(key="_so_remark_new").value == "โทรก่อนส่ง"
     app.text_input(key=number_key).input("SO-001")
     app.button(key="_so_save_new").click().run()
-    assert not app.exception and db.get_sales_order(so_number="SO-001")
+    saved = db.get_sales_order(so_number="SO-001")
+    assert not app.exception and saved["customer_po_no"] == "PO-075" and saved["remark"] == "โทรก่อนส่ง"
 
 
 def test_customer_search_with_no_match_shows_a_message(temp_db):

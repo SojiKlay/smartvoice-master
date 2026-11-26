@@ -414,11 +414,32 @@ def test_sales_order_page_edit_form_saves(tmp_db):
     at.radio(key="_so_mode").set_value("แก้ไข SO ที่มีอยู่").run()
     assert not at.exception
     order_id = db.get_sales_order(so_number="SO-100")["id"]
+    at.number_input(key=f"_so_vat_{order_id}").set_value(100.0).run()
+    assert any("ยอดสุทธิก่อนบันทึก" in m.value and "10,000.00" in m.value for m in at.markdown)
+    assert db.get_sales_order(so_id=order_id)["grand_total"] == 9900
     at.text_area(key=f"_so_remark_{order_id}").input("โทรก่อนส่ง").run()
     at.button(key=f"_so_save_{order_id}").click().run()
     assert not at.exception
     assert db.get_sales_order(so_id=order_id)["remark"] == "โทรก่อนส่ง"
     assert len(db.get_sales_order(so_id=order_id)["lines"]) == 1
+
+
+def test_import_preview_identifies_hidden_order_before_replacement(tmp_db, monkeypatch):
+    customer_id = _seed_order()
+    old = db.get_sales_order(so_number="SO-100")
+    db.soft_delete_sales_order(old["id"], actor="admin")
+    upload = io.BytesIO("เลขที่ SO,รายละเอียดสินค้า\nSO-100,หมอน\n".encode("utf-8"))
+    upload.name = "orders.csv"
+    monkeypatch.setattr("streamlit.file_uploader", lambda *args, **kwargs: upload)
+    app = _signed_in(AppTest.from_file("pages/13_Sales_Orders.py", default_timeout=30), "Admin").run()
+    preview = next(table.value for table in app.dataframe if "จับคู่ลูกค้า" in table.value.columns)
+    assert "กู้คืน" in preview.iloc[0]["สถานะ"]
+    assert db.get_customer_by_id(customer_id)["first_name"] in preview.iloc[0]["จับคู่ลูกค้า"]
+    assert db.get_sales_order(so_number="SO-100") is None
+    next(button for button in app.button if button.label == "นำเข้า 1 SO").click().run()
+    saved = db.get_sales_order(so_number="SO-100")
+    assert not app.exception and saved["id"] == old["id"] and saved["customer_id"] == customer_id
+    assert [line["description"] for line in saved["lines"]] == ["หมอน"]
 
 
 def test_customer_page_tables_are_clickable(tmp_db):

@@ -97,14 +97,14 @@ def validate_customer(
     duplicate of itself.
     """
     if not clean(first_name):
-        return "กรุณากรอกชื่อ"
+        return "ช่องชื่อยังว่าง กรุณากรอกชื่อของลูกค้า เช่น สมชาย"
     if not clean(last_name):
-        return "กรุณากรอกนามสกุล"
+        return "ช่องนามสกุลยังว่าง กรุณากรอกนามสกุลของลูกค้า เช่น ใจดี"
 
     normalized = normalize_phone(phone)
     if normalized:
         if not _PHONE_RE.match(normalized):
-            return "เบอร์โทรต้องขึ้นต้นด้วย 0 และมี 9-10 หลัก (เช่น 0812345678)"
+            return "กรุณาแก้ช่องเบอร์โทรให้ขึ้นต้นด้วย 0 และมี 9-10 หลัก เช่น 0812345678 หรือเว้นว่าง"
         # `phone` is UNIQUE, so a hidden customer still owns the number — say so
         # instead of letting the insert fail on the constraint.
         existing = db.get_customer_by_phone(normalized, include_deleted=True)
@@ -113,9 +113,9 @@ def validate_customer(
             if existing.get("deleted_at"):
                 return (
                     f"เบอร์ `{normalized}` เป็นของลูกค้าที่ถูกซ่อนไว้ — {who} "
-                    "กู้คืนจาก 🗄 รายการที่ซ่อนไว้ แทนการสร้างใหม่"
+                    "หากเป็นคนเดียวกัน ให้กู้คืนจากแท็บรายการที่ซ่อนไว้ หากเป็นคนละคน ให้แก้เบอร์โทรหรือเว้นว่าง"
                 )
-            return f"เบอร์ `{normalized}` มีลูกค้าอยู่แล้ว — {who}"
+            return f"เบอร์โทร `{normalized}` มีลูกค้าอยู่แล้ว — {who} กรุณาตรวจสอบเจ้าของเบอร์ ใช้เบอร์ของลูกค้ารายนี้หรือเว้นว่าง"
     return None
 
 
@@ -131,9 +131,9 @@ def validate_warranty(
     """
     reg = clean(registration_no)
     if not reg:
-        return "กรุณากรอกเลขทะเบียนรับประกัน"
+        return "ช่องเลขทะเบียนรับประกันยังว่าง กรุณากรอกเลขของรายการทะเบียน เช่น REG-001"
     if not _REGISTRATION_RE.match(reg):
-        return "เลขทะเบียนใช้ได้เฉพาะ A-Z 0-9 . _ - / และยาวอย่างน้อย 3 ตัวอักษร"
+        return "กรุณาแก้เลขทะเบียนรับประกันให้ยาวอย่างน้อย 3 ตัวอักษร ใช้ตัวอักษรอังกฤษ ตัวเลข หรือ . _ - / เช่น REG-001"
     if not customer_id:
         return "กรุณาเลือกลูกค้าเจ้าของทะเบียนรับประกัน"
     existing = db.get_warranty_by_registration(reg, include_deleted=True)
@@ -141,9 +141,9 @@ def validate_warranty(
         if existing.get("deleted_at"):
             return (
                 f"เลขทะเบียน `{reg}` เป็นของรายการที่ถูกซ่อนไว้ (id={existing['id']}) — "
-                "กู้คืนจาก 🗄 รายการที่ซ่อนไว้ แทนการสร้างใหม่"
+                "หากต้องการใช้รายการเดิม ให้กู้คืนจากแท็บรายการที่ซ่อนไว้ หากเป็นคนละทะเบียนให้ตรวจเลขอีกครั้ง"
             )
-        return f"เลขทะเบียน `{reg}` มีอยู่แล้วในระบบ"
+        return f"เลขทะเบียน `{reg}` มีอยู่แล้วในระบบ กรุณาตรวจเลขทะเบียน หรือค้นหาและแก้ไขรายการเดิม"
     return None
 
 

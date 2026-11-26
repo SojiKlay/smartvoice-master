@@ -20,6 +20,7 @@ user, role = init_page(PAGE_SALES_ORDERS)
 can_edit = can_access(role, PAGE_DATA_ENTRY)
 
 st.title("ใบสั่งขาย (SO)")
+st.html('<style>[data-testid="stCaptionContainer"] p { color: var(--st-text-color, inherit); font-size: 0.95rem; }</style>')
 st.caption(
     "ค้นหาใบสั่งขายด้วยเลขที่ SO ชื่อ เบอร์ หรือรหัส/ชื่อสินค้า แล้วคลิกแถวเพื่อเปิดดูทั้งใบ "
     "— SO จะผูกกับลูกค้าในระบบอัตโนมัติจากเบอร์ผู้รับ (หรือเบอร์ผู้ซื้อ)"
@@ -58,7 +59,7 @@ def _so_dialog(so_id: int) -> None:
         "ผูกกับลูกค้าในระบบ",
         options,
         index=options.index(current) if current in options else 0,
-        format_func=lambda cid: "— ไม่ผูกกับลูกค้า —" if cid is None else names.get(cid, str(cid)),
+        format_func=lambda cid: "ไม่ระบุ (ไม่ผูกกับลูกค้า)" if cid is None else names.get(cid, str(cid)),
         key=f"_so_link_{so_id}",
     )
     link_col, hide_col = st.columns(2)
@@ -136,8 +137,13 @@ if can_edit:
             icon=":material/download:",
         )
         st.caption(
-            "SO ที่มีอยู่แล้วจะถูกอัปเดตตามไฟล์ (รายการสินค้าแทนที่ทั้งหมด) "
-            "— ช่องยอดเงินที่ว่างไว้ระบบจะคำนวณให้ วันที่ใส่ได้ทั้ง พ.ศ. และ ค.ศ."
+            f"ใส่เลขที่ SO ในทุกแถวสินค้า {sales_orders.SO_NUMBER_HELP} "
+            "วันที่ใช้วัน/เดือน/ปี เช่น 25/11/2569 หรือ 25/11/2026 "
+            "ยอดเงินที่ระบุจะใช้ตามไฟล์ ช่องว่างจะคำนวณเมื่อมีข้อมูลเพียงพอ"
+        )
+        st.warning(
+            "หากเลขที่ SO ตรงกับใบเดิม การยืนยันนำเข้าจะเขียนข้อมูลหัวใบใหม่ตามไฟล์และแทนที่รายการสินค้าทั้งหมด "
+            "ให้ใส่ทุกรายการที่ต้องการเก็บไว้ หากใบเดิมถูกซ่อน ระบบจะกู้คืนและอัปเดตใบนั้นด้วย"
         )
 
         upload_key = f"_so_upload_{st.session_state.get('_so_upload_n', 0)}"
@@ -146,7 +152,7 @@ if can_edit:
             try:
                 frame = sales_orders.read_upload(uploaded.name, uploaded.getvalue())
             except ValueError as exc:
-                st.error(str(exc))
+                st.error(f"เปิดไฟล์นำเข้าไม่ได้ — {exc} กรุณาตรวจว่าไฟล์เปิดได้และมีข้อมูล แล้วเลือกไฟล์อีกครั้ง")
                 frame = None
             if frame is not None:
                 result = sales_orders.parse_import(frame)
@@ -165,10 +171,14 @@ if can_edit:
                     for header, lines in result.orders:
                         exists = db.get_sales_order(so_number=header["so_number"], include_deleted=True)
                         customer_id = sales_orders.find_customer_id(header)
+                        status = "ใหม่"
+                        if exists:
+                            status = "กู้คืนและอัปเดตใบที่ซ่อน" if exists.get("deleted_at") else "อัปเดตใบเดิม"
+                            customer_id = customer_id or exists.get("customer_id")
                         customer = db.get_customer_by_id(customer_id) if customer_id else None
                         preview.append({
                             "เลขที่ SO": header["so_number"],
-                            "สถานะ": "อัปเดต (มีอยู่แล้ว)" if exists else "ใหม่",
+                            "สถานะ": status,
                             "วันที่สั่งซื้อ": labels.thai_time(header.get("order_date") or header.get("document_date"), with_time=False),
                             "ผู้ซื้อ": header.get("sell_to_name") or "-",
                             "ผู้รับ": header.get("ship_to_name") or "-",
@@ -177,6 +187,7 @@ if can_edit:
                             "จับคู่ลูกค้า": f"{customer['first_name']} {customer['last_name']}" if customer else "-",
                         })
                     st.markdown(f"**ตรวจสอบก่อนนำเข้า: {len(result.orders):,} SO, {result.line_count:,} รายการสินค้า**")
+                    st.caption("ตรวจสถานะ จำนวนสินค้า และลูกค้าก่อนยืนยัน ระบบเทียบเบอร์ผู้รับก่อน แล้วจึงลองเบอร์ผู้ซื้อ หากไม่พบจะคงการผูกลูกค้าเดิม")
                     st.dataframe(pd.DataFrame(preview), width="stretch", hide_index=True)
                     if st.button(
                         f"นำเข้า {len(result.orders):,} SO", type="primary",
@@ -237,9 +248,11 @@ if can_edit:
             c1, c2, c3 = st.columns(3)
             header["so_number"] = _text(
                 "so_number", "เลขที่ SO *", c1, disabled=bool(order), placeholder="เช่น SO-001",
-                help="ใช้เลขที่ไม่ซ้ำ อย่างน้อย 2 ตัวอักษร ใช้ตัวอักษรอังกฤษ ตัวเลข หรือ . _ - / ได้",
+                help=sales_orders.SO_NUMBER_HELP,
             )
+            c1.caption(f"เลขที่ SO ของใบใหม่ต้องไม่ซ้ำ {sales_orders.SO_NUMBER_HELP} เมื่อบันทึกแล้วเปลี่ยนเลขเดิมไม่ได้")
             header["document_date"] = _date("document_date", "วันที่เอกสาร", c2)
+            c2.caption("เลือกวัน/เดือน/ปี ค.ศ. เช่น 25/11/2026")
             header["order_date"] = _date("order_date", "วันที่สั่งซื้อ", c3)
             c1, c2, c3 = st.columns(3)
             header["shipment_date"] = _date("shipment_date", "วันที่จัดส่ง", c1)
@@ -248,30 +261,56 @@ if can_edit:
             c1, c2, c3, c4 = st.columns(4)
             header["sales_type"] = _text("sales_type", "ประเภทการขาย", c1, placeholder="เช่น ขายปลีก")
             header["purchasing_type"] = _text("purchasing_type", "ประเภทการซื้อ", c2, placeholder="เช่น สั่งซื้อตามใบเสนอราคา")
-            header["salesperson"] = _text("salesperson", "พนักงานขาย", c3, placeholder="ชื่อหรือรหัสพนักงานขาย")
-            header["currency"] = _text("currency", "สกุลเงิน", c4, placeholder="THB")
+            header["salesperson"] = _text("salesperson", "พนักงานขาย", c3, placeholder="เช่น SALE-01")
+            header["currency"] = _text("currency", "สกุลเงิน", c4, placeholder="เช่น THB")
             c1, c2, c3 = st.columns(3)
-            header["external_doc"] = _text("external_doc", "เลขที่เอกสารภายนอก", c1, placeholder="เลขอ้างอิงจากคู่ค้า")
+            header["external_doc"] = _text("external_doc", "เลขที่เอกสารภายนอก", c1, placeholder="เช่น EXT-015")
+            c1.caption("เลขอ้างอิงบนเอกสารภายนอกที่เกี่ยวกับการขายครั้งนี้")
             header["credit_term"] = _text("credit_term", "เงื่อนไขการชำระเงิน", c2, placeholder="เช่น เครดิต 30 วัน")
-            header["customer_po_no"] = _text("customer_po_no", "เลขที่ใบสั่งซื้อของลูกค้า (PO)", c3)
+            header["customer_po_no"] = _text("customer_po_no", "เลขที่ใบสั่งซื้อของลูกค้า (PO)", c3, placeholder="เช่น PO-075")
+            c3.caption("คัดลอกเลขจากใบสั่งซื้อที่ลูกค้าออกให้")
 
             buyer_col, receiver_col = st.columns(2)
             with buyer_col:
                 st.markdown("**ผู้ซื้อ (Sell-to)**")
-                header["sell_to_no"] = _text("sell_to_no", "รหัสผู้ซื้อ", st, placeholder="C-001")
-                header["sell_to_name"] = _text("sell_to_name", "ชื่อผู้ซื้อ", st, placeholder="ชื่อบุคคลหรือบริษัทผู้ซื้อ")
-                header["sell_to_address"] = _text("sell_to_address", "ที่อยู่ผู้ซื้อ", st, placeholder="บ้านเลขที่ ถนน จังหวัด")
-                header["sell_to_contact"] = _text("sell_to_contact", "ผู้ติดต่อ", st, placeholder="ชื่อผู้ประสานงานฝ่ายผู้ซื้อ")
-                header["sell_to_phone"] = _text("sell_to_phone", "เบอร์ผู้ซื้อ", st, placeholder="0812345678")
+                st.caption("ระบุบุคคลหรือบริษัทที่สั่งซื้อ เช่น บริษัทที่ออกใบ PO")
+                header["sell_to_no"] = _text("sell_to_no", "รหัสผู้ซื้อ", st, placeholder="เช่น C-001")
+                header["sell_to_name"] = _text("sell_to_name", "ชื่อผู้ซื้อ", st, placeholder="เช่น บริษัท ตัวอย่าง จำกัด")
+                header["sell_to_address"] = _text("sell_to_address", "ที่อยู่ผู้ซื้อ", st, placeholder="เช่น 12 ถนนสีลม กรุงเทพฯ")
+                header["sell_to_contact"] = _text("sell_to_contact", "ผู้ติดต่อ", st, placeholder="เช่น คุณมาลี")
+                header["sell_to_phone"] = _text("sell_to_phone", "เบอร์ผู้ซื้อ", st, placeholder="เช่น 0812345678")
             with receiver_col:
                 st.markdown("**ผู้รับ / ที่อยู่จัดส่ง (Ship-to)**")
-                header["ship_to_name"] = _text("ship_to_name", "ชื่อผู้รับ", st, placeholder="ชื่อผู้รับตามใบจัดส่ง")
-                header["ship_to_address"] = _text("ship_to_address", "ที่อยู่ผู้รับ", st, placeholder="ที่อยู่สำหรับจัดส่งสินค้า")
-                header["ship_to_contact"] = _text("ship_to_contact", "ผู้ติดต่อ", st, placeholder="ชื่อผู้ประสานงานที่จุดส่งสินค้า")
-                header["ship_to_phone"] = _text("ship_to_phone", "เบอร์ผู้รับ", st, placeholder="0812345678")
-                header["ship_to_email"] = _text("ship_to_email", "อีเมลผู้รับ", st, placeholder="receiver@example.com")
+                st.caption("ระบุผู้รับสินค้าที่ปลายทางและที่อยู่จัดส่ง เช่น สาขาหรือผู้รับที่ลูกค้าแจ้งไว้")
+                header["ship_to_name"] = _text("ship_to_name", "ชื่อผู้รับ", st, placeholder="เช่น คุณสมชาย")
+                header["ship_to_address"] = _text("ship_to_address", "ที่อยู่ผู้รับ", st, placeholder="เช่น 45 ถนนสาทร กรุงเทพฯ")
+                header["ship_to_contact"] = _text("ship_to_contact", "ผู้ติดต่อ", st, placeholder="เช่น คุณนิด")
+                header["ship_to_phone"] = _text("ship_to_phone", "เบอร์ผู้รับ", st, placeholder="เช่น 0812345678")
+                header["ship_to_email"] = _text("ship_to_email", "อีเมลผู้รับ", st, placeholder="เช่น receiver@example.com")
 
-            st.markdown("**รายการสินค้า** — เพิ่มแถวได้ที่ปุ่ม + ใต้ตาราง, ช่องจำนวนเงินที่ว่างระบบคำนวณให้")
+            customers = db.get_all_customers()
+            options = [None] + [c["id"] for c in customers]
+            names = {c["id"]: _customer_label(c) for c in customers}
+            current = values.get("customer_id")
+            header["customer_id"] = st.selectbox(
+                "ลูกค้าในระบบ",
+                options,
+                index=options.index(current) if current in options else 0,
+                format_func=lambda cid: "อัตโนมัติจากเบอร์ผู้รับ/ผู้ซื้อ" if cid is None else names.get(cid, str(cid)),
+                key=f"_so_customer_{sid}",
+            )
+            st.caption("เลือกชื่อลูกค้าเองได้ หากเลือกอัตโนมัติ ระบบจะค้นจากเบอร์ผู้รับก่อน แล้วลองเบอร์ผู้ซื้อ "
+                       "ถ้าไม่พบ ใบใหม่จะยังไม่ผูกลูกค้า ส่วนใบเดิมจะคงลูกค้าที่ผูกไว้")
+
+            st.markdown("**รายการสินค้า**")
+            st.caption(
+                "เลื่อนตารางในแนวนอนเพื่อดูคอลัมน์ด้านขวา กด + ใต้ตารางเพื่อเพิ่มสินค้า 1 รายการต่อแถว ใส่รหัสหรือบาร์โค้ดตามเอกสาร เช่น MAT-01 "
+                "และคลังที่ระบุในใบสั่งขาย เช่น WH-01 ช่องจำนวนกรอกตามหน่วยสินค้า เช่น 2 ชิ้น"
+            )
+            st.caption(
+                "กรอกราคาต่อ 1 หน่วยและส่วนลดรวมของแถวเป็นจำนวนเงินตามสกุลเงินของใบสั่งขาย "
+                "หากเว้นจำนวนเงินรายการ ระบบคำนวณ จำนวน × ราคาต่อหน่วย − ส่วนลด เช่น 2 × 500 − 50 = 950 บาท"
+            )
             line_frame = pd.DataFrame(
                 [
                     {
@@ -312,6 +351,11 @@ if can_edit:
             )
 
             st.markdown("**ยอดเงิน**")
+            st.caption(
+                "ระบบรวมจำนวนเงินทุกรายการ หักส่วนลดท้ายบิล แล้วบวก VAT "
+                "กรอกส่วนลดและ VAT เป็นจำนวนเงินตามเอกสาร เช่น ยอดรายการรวม 950 บาท หักส่วนลดท้ายบิล 50 บาท "
+                "หากเอกสารระบุ VAT 63 บาท ให้กรอก 63 ยอดรวมสุทธิจะเป็น 963 บาท ช่องเหล่านี้ไม่รับอัตราเปอร์เซ็นต์"
+            )
             auto_totals = st.checkbox(
                 "คำนวณยอดรวม / ยอดหลังหักส่วนลด / ยอดรวมสุทธิ จากรายการสินค้าอัตโนมัติ",
                 value=sales_orders.totals_follow_lines(order) if order else True,
@@ -328,21 +372,15 @@ if can_edit:
                 header["net_amount"] = _money("net_amount", "ยอดหลังหักส่วนลด", c3)
                 header["vat"] = _money("vat", "ภาษีมูลค่าเพิ่ม (จำนวนเงิน)", c4)
                 header["grand_total"] = _money("grand_total", "ยอดรวมสุทธิ", c5)
-            header["remark"] = st.text_area("หมายเหตุ", placeholder="เช่น ข้อกำหนดในการจัดส่ง", value=values.get("remark") or "", key=f"_so_remark_{sid}")
+            preview_lines, line_errors = sales_orders.clean_lines(edited.to_dict("records"))
+            if not line_errors:
+                totals = header.copy()
+                sales_orders.complete_totals(totals, preview_lines)
+                st.markdown(f"**ยอดสุทธิก่อนบันทึก** {labels.baht(totals.get('grand_total'))} {header.get('currency') or ''}")
+            st.markdown("**หมายเหตุ**")
+            header["remark"] = st.text_area("ข้อความเพิ่มเติม", placeholder="เช่น โทรแจ้งผู้รับก่อนจัดส่ง", value=values.get("remark") or "", key=f"_so_remark_{sid}")
 
-            customers = db.get_all_customers()
-            options = [None] + [c["id"] for c in customers]
-            names = {c["id"]: _customer_label(c) for c in customers}
-            current = values.get("customer_id")
-            header["customer_id"] = st.selectbox(
-                "ลูกค้าในระบบ",
-                options,
-                index=options.index(current) if current in options else 0,
-                format_func=lambda cid: "อัตโนมัติจากเบอร์ผู้รับ/ผู้ซื้อ" if cid is None else names.get(cid, str(cid)),
-                key=f"_so_customer_{sid}",
-            )
-
-            if st.button("บันทึก SO", type="primary", key=f"_so_save_{sid}", icon=":material/save:"):
+            if st.button("บันทึก SO", type="primary", key=f"_so_save_{sid}", icon=":material/save:", use_container_width=True):
                 saved_id, error = sales_orders.save_manual(
                     header, edited.to_dict("records"), actor=user, actor_role=role,
                     so_id=order["id"] if order else None,

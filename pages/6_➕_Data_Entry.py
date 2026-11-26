@@ -15,12 +15,16 @@ from smartvoice.ui_helpers import init_page, render_proof
 current_user, current_role = init_page(PAGE_DATA_ENTRY)
 
 st.title("ข้อมูลลูกค้า & ทะเบียนรับประกัน")
+st.html('<style>[data-testid="stCaptionContainer"] p { color: var(--st-text-color, inherit); font-size: 0.95rem; }</style>')
 st.caption("เพิ่ม / แก้ไข / ลบ ข้อมูลลูกค้าและทะเบียนรับประกัน — ช่องที่มี * จำเป็นต้องระบุ ช่องอื่นเว้นว่างหรือใช้ค่าเริ่มต้นได้")
 
 _OTHER = "อื่นๆ"
 _NONE = "—"
 _FLASH_KEY = "_data_entry_flash"
-_PHONE_HELP = "ระบุเบอร์ที่ไม่ซ้ำกับลูกค้ารายอื่น ขึ้นต้นด้วย 0 และมี 9–10 หลัก เช่น 0812345678"
+_PHONE_HELP = (
+    "เบอร์โทรไม่บังคับ หากกรอก ต้องขึ้นต้นด้วย 0 มี 9–10 หลัก และไม่ซ้ำกับลูกค้ารายอื่น "
+    "เมื่อเบอร์ในสายโทรศัพท์ตรงกัน ระบบจะเชื่อมสายนั้นกับประวัติลูกค้าโดยอัตโนมัติ"
+)
 _REGISTRATION_HELP = "ใช้เลขทะเบียนที่ไม่ซ้ำ อย่างน้อย 3 ตัวอักษร ใช้ตัวอักษรอังกฤษ ตัวเลข หรือ . _ - / ได้"
 
 # Saving reruns the page so the pickers and tables pick up the change, which
@@ -28,6 +32,10 @@ _REGISTRATION_HELP = "ใช้เลขทะเบียนที่ไม่�
 _flash = st.session_state.pop(_FLASH_KEY, None)
 if _flash:
     st.success(_flash)
+
+
+def _option_label(value: str) -> str:
+    return "ไม่ระบุ" if value == _NONE else value
 
 
 def _flash_and_rerun(message: str):
@@ -57,7 +65,7 @@ def _pick_with_other(label: str, options, key: str, current: str | None = None):
     else:
         index = 0
 
-    choice = st.selectbox(label, choices, index=index, key=key, help="เลือกจากรายการ หรือเลือก อื่นๆ เพื่อพิมพ์เอง")
+    choice = st.selectbox(label, choices, index=index, key=key, format_func=_option_label, help="เลือกจากรายการ หรือเลือก อื่นๆ เพื่อพิมพ์เอง")
     if choice == _OTHER:
         typed = st.text_input(
             f"{label} (ระบุเอง)",
@@ -71,6 +79,180 @@ def _pick_with_other(label: str, options, key: str, current: str | None = None):
 
 def _customer_label(c: dict) -> str:
     return f"{c['first_name']} {c['last_name']} ({c['phone'] or '-'}) · id={c['id']}"
+
+
+def _customer_fields(customer: dict) -> dict:
+    fields = {}
+
+    def text_field(column, key, label, example, default=""):
+        fields[key] = column.text_input(label, value=customer.get(key) or default, placeholder=example)
+
+    st.markdown("**ข้อมูลส่วนบุคคล**")
+    st.caption("ต้องกรอกชื่อและนามสกุลในช่องที่มี * ส่วนชื่อเล่น เพศ และวันเกิดเว้นว่างได้")
+    left, right = st.columns(2)
+    text_field(left, "first_name", "ชื่อ *", "เช่น สมชาย")
+    text_field(right, "last_name", "นามสกุล *", "เช่น ใจดี")
+    text_field(left, "nick_name", "ชื่อเล่น", "เช่น นิด")
+    genders = (_NONE, *customer_entry.GENDERS)
+    gender_labels = {_NONE: "ไม่ระบุ", "MALE": "ชาย", "FEMALE": "หญิง", "OTHER": "อื่น ๆ"}
+    gender = right.selectbox(
+        "เพศ", genders, index=genders.index(customer["gender"]) if customer.get("gender") in genders else 0,
+        format_func=lambda value: gender_labels.get(value, value),
+    )
+    fields["gender"] = None if gender == _NONE else gender
+    fields["date_of_birth"] = left.date_input(
+        "วันเกิด", value=_as_date(customer.get("date_of_birth")), min_value=date(1920, 1, 1),
+        max_value=date.today(), format="DD/MM/YYYY",
+    )
+    left.caption("เลือกวันเกิดตั้งแต่ 1 มกราคม ค.ศ. 1920 ถึงวันนี้")
+
+    st.markdown("**ข้อมูลติดต่อ (ไม่บังคับ)**")
+    left, right = st.columns(2)
+    fields["phone"] = left.text_input(
+        "เบอร์โทร", value=customer.get("phone") or "", placeholder="เช่น 0812345678", help=_PHONE_HELP,
+    )
+    left.caption(_PHONE_HELP)
+    text_field(right, "email", "อีเมล", "เช่น somchai@example.com")
+    channels = (_NONE, *customer_entry.CHANNELS)
+    channel = customer.get("channel")
+    if channel and channel not in channels:
+        channels = (*channels, channel)
+    selected_channel = right.selectbox("แบรนด์ที่ลูกค้าติดต่อ", channels, index=channels.index(channel) if channel else 0, format_func=_option_label)
+    fields["channel"] = None if selected_channel == _NONE else selected_channel
+
+    st.markdown("**ที่อยู่ (ไม่บังคับ)**")
+    fields["address"] = st.text_area(
+        "ที่อยู่", value=customer.get("address") or "", placeholder="เช่น 123/45 ซอย 2 ถนนพหลโยธิน", height=100,
+    )
+    left, right = st.columns(2)
+    text_field(left, "subdistrict", "แขวง/ตำบล", "เช่น ลาดยาว")
+    text_field(right, "district", "เขต/อำเภอ", "เช่น จตุจักร")
+    text_field(left, "city_province", "จังหวัด", "เช่น กรุงเทพมหานคร")
+    text_field(right, "postcode", "รหัสไปรษณีย์", "เช่น 10900")
+    text_field(left, "country", "ประเทศ", "เช่น Thailand", default="Thailand")
+    return fields
+
+
+def _warranty_editor(customers: dict, warranty: dict) -> None:
+    wid = warranty.get("id")
+    editing = wid is not None
+    suffix = wid if editing else "new"
+    prefix = f"_warranty_{suffix}_"
+    fields = {}
+
+    def text_field(column, key, label, example, guidance=None):
+        fields[key] = column.text_input(
+            label, value=warranty.get(key) or "", placeholder=f"เช่น {example}", key=prefix + key,
+            help=_REGISTRATION_HELP if key == "registration_no" else None,
+        )
+        if guidance:
+            column.caption(f"{guidance} ตัวอย่าง {example}")
+
+    def pick(label, key, options):
+        fields[key] = _pick_with_other(label, options, prefix + key, warranty.get(key))
+
+    st.markdown("**ข้อมูลเจ้าของทะเบียน**")
+    st.caption("ต้องระบุสองช่องที่มี * คือเจ้าของทะเบียนและเลขทะเบียนรับประกัน ช่องอื่นเว้นว่างหรือใช้ค่าเริ่มต้นได้")
+    owners = list(customers)
+    owner = next((name for name in owners if customers[name] == warranty.get("customer_id")), None)
+    selected = st.selectbox("ลูกค้าเจ้าของทะเบียน *", owners, index=owners.index(owner) if owner else None, placeholder="กรุณาเลือกเจ้าของทะเบียน", key=prefix + "owner")
+    fields["customer_id"] = customers.get(selected)
+    text_field(st, "registration_no", "เลขทะเบียนรับประกัน *", "REG-001",
+               f"Registration No. คือเลขของรายการทะเบียนนี้ {_REGISTRATION_HELP}")
+
+    st.markdown("**ข้อมูลสินค้า (ไม่บังคับ)**")
+    left, right = st.columns(2)
+    with left:
+        pick("แบรนด์", "brand", customer_entry.BRANDS)
+        pick("หมวดหมู่", "category", customer_entry.CATEGORIES)
+    text_field(right, "model", "รุ่น", "Natura Latex")
+    text_field(right, "size", "ขนาด", "5 ฟุต")
+    text_field(left, "serial_no", "หมายเลขประจำสินค้า (Serial No.)", "SN-001",
+               "กรอกหมายเลขประจำชิ้นที่ระบุว่า Serial No. บนสินค้าหรือเอกสาร")
+    text_field(right, "label_no", "เลขบนป้ายสินค้า (Label No.)", "LB-001",
+               "กรอกเลขที่ระบุว่า Label No. บนป้ายสินค้าหรือเอกสาร")
+    text_field(left, "sku", "รหัสสินค้า (SKU)", "SKU-001", "กรอกรหัสที่ระบุว่า SKU ในรายการสินค้า")
+
+    st.markdown("**เอกสารอ้างอิง (ไม่บังคับ)**")
+    left, right = st.columns(2)
+    text_field(left, "certificate_no", "เลขที่ใบรับประกัน (Certificate No.)", "CERT-001",
+               "คัดลอกเลขที่ใบรับประกันจากเอกสารที่ได้รับ")
+    text_field(right, "order_number", "เลขที่คำสั่งซื้อ (Order Number)", "ORD-001",
+               "กรอกเลขคำสั่งซื้อที่ร้านค้าหรือช่องทางออนไลน์แสดงให้ผู้ซื้อ")
+    text_field(left, "so_number", "เลขที่ SO", "SO-001", "กรอกเลขที่ใบสั่งขาย (Sales Order) หากมีเอกสารอ้างอิง")
+    text_field(right, "ref_id", "เลขอ้างอิงทะเบียน (Ref Id)", "REF-001",
+               "กรอกค่าจากช่อง Ref Id ในข้อมูลต้นทาง หากไม่มีให้เว้นว่าง")
+    with left:
+        pick("ช่องทาง (แบรนด์ร้าน)", "channel", customer_entry.CHANNELS)
+    with right:
+        pick("ช่องทางซื้อ", "purchase_channel", customer_entry.PURCHASE_CHANNELS)
+    if editing:
+        st.markdown("**หลักฐานการซื้อปัจจุบัน**")
+        render_proof(warranty.get("proof_path"), key=prefix + "proof_view")
+    proof = st.file_uploader(
+        "แนบหลักฐานการซื้อใหม่ (แทนที่ไฟล์เดิม)" if editing else "แนบหลักฐานการซื้อ เช่น ใบเสร็จหรือสลิป",
+        type=["jpg", "jpeg", "png", "webp", "pdf"], key=prefix + "proof", max_upload_size=file_manager.MAX_PROOF_SIZE_MB,
+    )
+    st.caption(f"รองรับ JPG/JPEG, PNG, WEBP และ PDF ขนาดไม่เกิน {file_manager.MAX_PROOF_SIZE_MB} MB ต่อไฟล์")
+
+    st.markdown("**เงื่อนไขการรับประกัน (ไม่บังคับ)**")
+    st.caption("วันที่ทุกช่องใช้วัน/เดือน/ปี ค.ศ. (DD/MM/YYYY)")
+    left, right = st.columns(2)
+    fields["date_of_purchase"] = left.date_input(
+        "วันที่ซื้อ", value=_as_date(warranty.get("date_of_purchase")) if editing else date.today(),
+        format="DD/MM/YYYY", key=prefix + "date_of_purchase",
+    )
+    fields["date_of_delivery"] = right.date_input(
+        "วันที่ส่งมอบ", value=_as_date(warranty.get("date_of_delivery")), format="DD/MM/YYYY", key=prefix + "date_of_delivery",
+    )
+    fields["warranty_period_months"] = left.number_input(
+        "ระยะเวลารับประกัน (เดือน)", min_value=0, max_value=600, step=12,
+        value=int(warranty.get("warranty_period_months", 120) or 0), key=prefix + "months",
+    )
+    years, months = divmod(fields["warranty_period_months"], 12)
+    left.markdown(f"**{fields['warranty_period_months']} เดือน** เท่ากับ {years} ปี {months} เดือน")
+    left.caption("ระบุ 0–600 เดือน เช่น 12 เดือน = 1 ปี และ 120 เดือน = 10 ปี "
+                 "ทะเบียนใหม่เริ่มที่ 120 เดือน โปรดตรวจวันที่ซื้อและจำนวนเดือนให้ตรงกับเงื่อนไขก่อนบันทึก")
+    auto = st.checkbox("คำนวณวันหมดประกันอัตโนมัติ", value=not editing, key=prefix + "auto")
+    calculated = customer_entry.compute_expiry_date(fields["date_of_purchase"], fields["warranty_period_months"])
+    st.caption("ระบบนับจากวันที่ซื้อ บวกจำนวนเดือนรับประกัน หากเดือนปลายทางไม่มีวันที่ตรงกัน จะใช้วันสุดท้ายของเดือน")
+    if auto:
+        if calculated:
+            st.success(f"วันหมดประกันที่คำนวณได้ **{date.fromisoformat(calculated):%d/%m/%Y}** (ค.ศ.)")
+        else:
+            st.info("หากต้องการคำนวณ ให้ระบุวันที่ซื้อและจำนวนเดือนมากกว่า 0")
+    fields["expiry_date"] = None
+    if not auto:
+        fields["expiry_date"] = st.date_input(
+            "วันหมดประกัน", value=_as_date(warranty.get("expiry_date")), format="DD/MM/YYYY", key=prefix + "expiry",
+        )
+        st.caption("กรอกวันที่ตามเอกสาร หากเว้นว่าง ระบบจะใช้วันที่คำนวณได้จากวันที่ซื้อและระยะเวลารับประกัน")
+    fields["remark"] = st.text_area(
+        "หมายเหตุ", value=warranty.get("remark") or "", placeholder="เช่น รายละเอียดเพิ่มเติมเกี่ยวกับการรับประกัน",
+        height=80, key=prefix + "remark",
+    )
+    if st.button("บันทึกการแก้ไข" if editing else "บันทึกทะเบียนรับประกัน", type="primary", key=f"_save_w_{suffix}", use_container_width=True):
+        fields["proof_path"] = warranty.get("proof_path")
+        if proof is not None:
+            try:
+                fields["proof_path"], error = file_manager.save_proof_file(proof.getvalue())
+            except OSError:
+                st.error("บันทึกหลักฐานการซื้อไม่ได้ กรุณาลองบันทึกอีกครั้ง หากยังพบปัญหา ให้แจ้งผู้ดูแลระบบตรวจพื้นที่จัดเก็บไฟล์")
+                return
+            if error:
+                st.error(f"หลักฐานการซื้อ — {error} กรุณาเลือกไฟล์ที่รองรับอีกครั้ง หรือนำไฟล์แนบออกแล้วบันทึก")
+                return
+        reg = fields["registration_no"].strip()
+        if editing:
+            error = customer_entry.update_warranty(wid, actor=current_user, actor_role=current_role, **fields)
+            success = f"บันทึกการแก้ไขทะเบียน **{reg}** เรียบร้อยแล้ว"
+        else:
+            new_id, error = customer_entry.create_warranty(actor=current_user, actor_role=current_role, **fields)
+            success = f"บันทึกทะเบียน **{reg}** เรียบร้อยแล้ว (id={new_id})"
+        if error:
+            st.error(error)
+        else:
+            _flash_and_rerun(success)
 
 
 def _recent_table(rows: list[dict], columns: dict, empty_message: str):
@@ -96,60 +278,20 @@ with tab_customer:
 
     with st.expander("เพิ่มลูกค้าใหม่", expanded=not customers):
         with st.form("_add_customer_form"):
-            c1, c2 = st.columns(2)
-            with c1:
-                first_name = st.text_input("ชื่อ *", placeholder="สมชาย")
-                last_name = st.text_input("นามสกุล *", placeholder="ใจดี")
-                phone = st.text_input("เบอร์โทร", help=_PHONE_HELP, placeholder="0812345678")
-                email = st.text_input("อีเมล", placeholder="somchai@email.com")
-                nick_name = st.text_input("ชื่อเล่น", placeholder="เช่น นิด")
-                cust_channel = st.selectbox("ช่องทาง (แบรนด์ที่ลูกค้าติดต่อ)", (_NONE, *customer_entry.CHANNELS))
-                gender = st.selectbox("เพศ", (_NONE, *customer_entry.GENDERS))
-                dob = st.date_input(
-                    "วันเกิด", help="เลือกวันเกิดตั้งแต่ 1 มกราคม ค.ศ. 1920 ถึงวันนี้",
-                    value=None,
-                    min_value=date(1920, 1, 1),
-                    max_value=date.today(),
-                    format="YYYY-MM-DD",
-                )
-            with c2:
-                address = st.text_area("ที่อยู่", placeholder="123/45 หมู่บ้าน ...", height=100)
-                a1, a2 = st.columns(2)
-                with a1:
-                    subdistrict = st.text_input("แขวง/ตำบล", placeholder="เช่น ลาดยาว")
-                    city_province = st.text_input("จังหวัด", placeholder="เช่น กรุงเทพมหานคร")
-                with a2:
-                    district = st.text_input("เขต/อำเภอ", placeholder="เช่น จตุจักร")
-                    postcode = st.text_input("รหัสไปรษณีย์", placeholder="เช่น 10900")
-                country = st.text_input("ประเทศ", value="Thailand")
-
-            st.caption("* จำเป็นต้องกรอก — เบอร์โทรต้องไม่ซ้ำกับลูกค้ารายอื่น (ใช้เชื่อมสายเข้าอัตโนมัติ)")
-            customer_submitted = st.form_submit_button("บันทึกลูกค้า", use_container_width=True)
+            fields = _customer_fields({})
+            customer_submitted = st.form_submit_button("บันทึกลูกค้า", type="primary", use_container_width=True)
 
         if customer_submitted:
             new_id, error = customer_entry.create_customer(
                 actor=current_user,
                 actor_role=current_role,
-                first_name=first_name,
-                last_name=last_name,
-                phone=phone,
-                email=email,
-                nick_name=nick_name,
-                channel=None if cust_channel == _NONE else cust_channel,
-                gender=None if gender == _NONE else gender,
-                date_of_birth=dob,
-                address=address,
-                subdistrict=subdistrict,
-                district=district,
-                city_province=city_province,
-                country=country,
-                postcode=postcode,
+                **fields,
             )
             if error:
                 st.error(error)
             else:
                 _flash_and_rerun(
-                    f"บันทึกลูกค้า **{first_name.strip()} {last_name.strip()}** เรียบร้อยแล้ว (id={new_id})"
+                    f"บันทึกลูกค้า **{fields['first_name'].strip()} {fields['last_name'].strip()}** เรียบร้อยแล้ว (id={new_id})"
                 )
 
     st.divider()
@@ -181,72 +323,22 @@ with tab_customer:
             st.caption(f"ข้อมูลที่ผูกอยู่: {dep_text or 'ไม่มี'}")
 
             with st.form(f"_edit_customer_form_{cid}"):
-                e1, e2 = st.columns(2)
-                with e1:
-                    ed_first = st.text_input("ชื่อ *", placeholder="สมชาย", value=picked["first_name"])
-                    ed_last = st.text_input("นามสกุล *", placeholder="ใจดี", value=picked["last_name"])
-                    ed_phone = st.text_input("เบอร์โทร", help=_PHONE_HELP, value=picked["phone"] or "")
-                    ed_email = st.text_input("อีเมล", placeholder="somchai@example.com", value=picked["email"] or "")
-                    ed_nick = st.text_input("ชื่อเล่น", placeholder="เช่น นิด", value=picked.get("nick_name") or "")
-                    channels = (_NONE, *customer_entry.CHANNELS)
-                    if picked.get("channel") and picked["channel"] not in channels:
-                        channels = (*channels, picked["channel"])
-                    ed_cust_channel = st.selectbox(
-                        "ช่องทาง (แบรนด์ที่ลูกค้าติดต่อ)",
-                        channels,
-                        index=channels.index(picked["channel"]) if picked.get("channel") in channels else 0,
-                    )
-                    genders = (_NONE, *customer_entry.GENDERS)
-                    ed_gender = st.selectbox(
-                        "เพศ",
-                        genders,
-                        index=genders.index(picked["gender"]) if picked["gender"] in genders else 0,
-                    )
-                    ed_dob = st.date_input(
-                        "วันเกิด", help="เลือกวันเกิดตั้งแต่ 1 มกราคม ค.ศ. 1920 ถึงวันนี้",
-                        value=_as_date(picked["date_of_birth"]),
-                        min_value=date(1920, 1, 1),
-                        max_value=date.today(),
-                        format="YYYY-MM-DD",
-                    )
-                with e2:
-                    ed_address = st.text_area("ที่อยู่", placeholder="123/45 หมู่บ้าน ...", value=picked["address"] or "", height=100)
-                    b1, b2 = st.columns(2)
-                    with b1:
-                        ed_subdistrict = st.text_input("แขวง/ตำบล", placeholder="เช่น ลาดยาว", value=picked["subdistrict"] or "")
-                        ed_city = st.text_input("จังหวัด", placeholder="เช่น กรุงเทพมหานคร", value=picked["city_province"] or "")
-                    with b2:
-                        ed_district = st.text_input("เขต/อำเภอ", placeholder="เช่น จตุจักร", value=picked["district"] or "")
-                        ed_postcode = st.text_input("รหัสไปรษณีย์", placeholder="เช่น 10900", value=picked["postcode"] or "")
-                    ed_country = st.text_input("ประเทศ", value=picked["country"] or "Thailand")
+                edited_fields = _customer_fields(picked)
 
-                edit_submitted = st.form_submit_button("บันทึกการแก้ไข", use_container_width=True)
+                edit_submitted = st.form_submit_button("บันทึกการแก้ไข", type="primary", use_container_width=True)
 
             if edit_submitted:
                 error = customer_entry.update_customer(
                     cid,
                     actor=current_user,
                     actor_role=current_role,
-                    first_name=ed_first,
-                    last_name=ed_last,
-                    phone=ed_phone,
-                    email=ed_email,
-                    nick_name=ed_nick,
-                    channel=None if ed_cust_channel == _NONE else ed_cust_channel,
-                    gender=None if ed_gender == _NONE else ed_gender,
-                    date_of_birth=ed_dob,
-                    address=ed_address,
-                    subdistrict=ed_subdistrict,
-                    district=ed_district,
-                    city_province=ed_city,
-                    country=ed_country,
-                    postcode=ed_postcode,
+                    **edited_fields,
                 )
                 if error:
                     st.error(error)
                 else:
                     _flash_and_rerun(
-                        f"บันทึกการแก้ไข **{ed_first.strip()} {ed_last.strip()}** เรียบร้อยแล้ว"
+                        f"บันทึกการแก้ไข **{edited_fields['first_name'].strip()} {edited_fields['last_name'].strip()}** เรียบร้อยแล้ว"
                     )
 
             st.markdown("**ลบลูกค้า (ซ่อนไว้ — กู้คืนได้)**")
@@ -303,89 +395,7 @@ with tab_warranty:
         }
 
         with st.expander("เพิ่มทะเบียนรับประกันใหม่", expanded=not warranties):
-            picked_customer = st.selectbox(
-                "ลูกค้าเจ้าของทะเบียน *", list(cust_map.keys()), key="_w_customer"
-            )
-            customer_id = cust_map.get(picked_customer)
-
-            w1, w2, w3 = st.columns(3)
-            with w1:
-                registration_no = st.text_input("เลขทะเบียนรับประกัน *", help=_REGISTRATION_HELP, placeholder="W011OZ25011")
-                certificate_no = st.text_input("เลขที่ใบรับประกัน", placeholder="CERT-OZ-011")
-                serial_no = st.text_input("หมายเลขประจำสินค้า (Serial No.)", placeholder="SN-OZ-011")
-                label_no = st.text_input("เลขบนป้ายสินค้า (Label No.)", placeholder="LB-OZ-011")
-                channel = _pick_with_other("ช่องทาง (แบรนด์ร้าน)", customer_entry.CHANNELS, "_w_channel")
-            with w2:
-                brand = _pick_with_other("แบรนด์", customer_entry.BRANDS, "_w_brand")
-                category = _pick_with_other("หมวดหมู่", customer_entry.CATEGORIES, "_w_category")
-                model = st.text_input("รุ่น", placeholder="Natura Latex")
-                size = st.text_input("ขนาด", placeholder="5ft")
-                sku = st.text_input("รหัสสินค้า (SKU)", placeholder="OZ-NL-5FT-011")
-            with w3:
-                purchase_channel = _pick_with_other(
-                    "ช่องทางซื้อ", customer_entry.PURCHASE_CHANNELS, "_w_purchase_channel"
-                )
-                order_number = st.text_input("เลขที่คำสั่งซื้อ (ร้านค้า/marketplace)", placeholder="เช่น ORD-001")
-                so_number = st.text_input("เลขที่ SO", help="ใบสั่งขายของบริษัท — ดูรายละเอียดได้ที่เมนู ใบสั่งขาย (SO)")
-                ref_id = st.text_input("เลขอ้างอิงทะเบียน (Ref Id)", help="เลขอ้างอิงจากระบบลงทะเบียนรับประกัน")
-                warranty_period_months = st.number_input(
-                    "ระยะเวลารับประกัน (เดือน)", help="ระบุจำนวนเดือนตั้งแต่ 0 ถึง 600 ตามเงื่อนไขรับประกัน", min_value=0, max_value=600, value=120, step=12
-                )
-                date_of_purchase = st.date_input("วันที่ซื้อ", value=date.today(), format="YYYY-MM-DD")
-                date_of_delivery = st.date_input("วันที่ส่งมอบ", value=None, format="YYYY-MM-DD")
-
-            auto_expiry = customer_entry.compute_expiry_date(date_of_purchase, warranty_period_months)
-            use_auto = st.checkbox(
-                f"คำนวณวันหมดประกันอัตโนมัติ ({auto_expiry or '—'})", value=True, key="_w_auto_expiry"
-            )
-            expiry_date = None
-            if not use_auto:
-                expiry_date = st.date_input("วันหมดประกัน", value=None, format="YYYY-MM-DD")
-
-            remark = st.text_area("หมายเหตุ", placeholder="เช่น รายละเอียดเพิ่มเติมเกี่ยวกับการรับประกัน", height=80)
-            proof = st.file_uploader(
-                "หลักฐานการซื้อ (ใบเสร็จ/สลิป) — รูป JPG/PNG/WEBP หรือ PDF ไม่เกิน 10 MB",
-                type=["jpg", "jpeg", "png", "webp", "pdf"],
-                key="_w_proof",
-            )
-
-            st.caption("* จำเป็นต้องกรอก — เลขทะเบียนต้องไม่ซ้ำกับรายการเดิม")
-            if st.button("บันทึกทะเบียนรับประกัน", use_container_width=True):
-                proof_path, error = (None, None)
-                if proof is not None:
-                    proof_path, error = file_manager.save_proof_file(proof.getvalue())
-                if not error:
-                    new_id, error = customer_entry.create_warranty(
-                        actor=current_user,
-                        actor_role=current_role,
-                        registration_no=registration_no,
-                        customer_id=customer_id,
-                        channel=channel,
-                        certificate_no=certificate_no,
-                        category=category,
-                        brand=brand,
-                        model=model,
-                        size=size,
-                        sku=sku,
-                        serial_no=serial_no,
-                        label_no=label_no,
-                        warranty_period_months=warranty_period_months,
-                        date_of_purchase=date_of_purchase,
-                        date_of_delivery=date_of_delivery,
-                        purchase_channel=purchase_channel,
-                        order_number=order_number,
-                        so_number=so_number,
-                        ref_id=ref_id,
-                        proof_path=proof_path,
-                        expiry_date=None if use_auto else expiry_date,
-                        remark=remark,
-                    )
-                if error:
-                    st.error(error)
-                else:
-                    _flash_and_rerun(
-                        f"บันทึกทะเบียน **{registration_no.strip()}** เรียบร้อยแล้ว (id={new_id})"
-                    )
+            _warranty_editor(cust_map, {})
 
         st.divider()
         st.subheader("แก้ไข / ลบ ทะเบียนรับประกัน")
@@ -423,136 +433,7 @@ with tab_warranty:
                     key="_edit_w_pick",
                 )
                 wid = picked_w["id"]
-                owner_label = next(
-                    (label for label, cust_id in cust_map.items() if cust_id == picked_w["customer_id"]),
-                    None,
-                )
-
-                x1, x2, x3 = st.columns(3)
-                with x1:
-                    ed_reg = st.text_input(
-                        "เลขทะเบียนรับประกัน *", help=_REGISTRATION_HELP, value=picked_w["registration_no"], key=f"_ew_reg_{wid}"
-                    )
-                    ed_cert = st.text_input(
-                        "เลขที่ใบรับประกัน", placeholder="CERT-OZ-011", value=picked_w["certificate_no"] or "", key=f"_ew_cert_{wid}"
-                    )
-                    ed_serial = st.text_input(
-                        "หมายเลขประจำสินค้า (Serial No.)", placeholder="SN-OZ-011", value=picked_w["serial_no"] or "", key=f"_ew_serial_{wid}"
-                    )
-                    ed_label = st.text_input(
-                        "เลขบนป้ายสินค้า (Label No.)", placeholder="LB-OZ-011", value=picked_w["label_no"] or "", key=f"_ew_label_{wid}"
-                    )
-                    ed_channel = _pick_with_other(
-                        "ช่องทาง (แบรนด์ร้าน)", customer_entry.CHANNELS,
-                        f"_ew_channel_{wid}", picked_w["channel"],
-                    )
-                with x2:
-                    ed_brand = _pick_with_other(
-                        "แบรนด์", customer_entry.BRANDS, f"_ew_brand_{wid}", picked_w["brand"]
-                    )
-                    ed_category = _pick_with_other(
-                        "หมวดหมู่", customer_entry.CATEGORIES, f"_ew_category_{wid}", picked_w["category"]
-                    )
-                    ed_model = st.text_input("รุ่น", placeholder="Natura Latex", value=picked_w["model"] or "", key=f"_ew_model_{wid}")
-                    ed_size = st.text_input("ขนาด", placeholder="5ft", value=picked_w["size"] or "", key=f"_ew_size_{wid}")
-                    ed_sku = st.text_input("รหัสสินค้า (SKU)", placeholder="OZ-NL-5FT-011", value=picked_w["sku"] or "", key=f"_ew_sku_{wid}")
-                with x3:
-                    ed_owner = st.selectbox(
-                        "ลูกค้าเจ้าของทะเบียน *",
-                        list(cust_map.keys()),
-                        index=list(cust_map.keys()).index(owner_label) if owner_label else 0,
-                        key=f"_ew_owner_{wid}",
-                    )
-                    ed_purchase_channel = _pick_with_other(
-                        "ช่องทางซื้อ", customer_entry.PURCHASE_CHANNELS,
-                        f"_ew_purchase_{wid}", picked_w["purchase_channel"],
-                    )
-                    ed_order = st.text_input(
-                        "เลขที่คำสั่งซื้อ (ร้านค้า/marketplace)", placeholder="เช่น ORD-001", value=picked_w["order_number"] or "",
-                        key=f"_ew_order_{wid}",
-                    )
-                    ed_so = st.text_input(
-                        "เลขที่ SO", help="เลขที่ใบสั่งขายของบริษัท", value=picked_w.get("so_number") or "", key=f"_ew_so_{wid}"
-                    )
-                    ed_ref = st.text_input(
-                        "เลขอ้างอิงทะเบียน (Ref Id)", value=picked_w.get("ref_id") or "", key=f"_ew_ref_{wid}"
-                    )
-                    ed_months = st.number_input(
-                        "ระยะเวลารับประกัน (เดือน)", help="ระบุจำนวนเดือนตั้งแต่ 0 ถึง 600 ตามเงื่อนไขรับประกัน",
-                        min_value=0, max_value=600, step=12,
-                        value=int(picked_w["warranty_period_months"] or 0),
-                        key=f"_ew_months_{wid}",
-                    )
-                    ed_purchase_date = st.date_input(
-                        "วันที่ซื้อ", value=_as_date(picked_w["date_of_purchase"]),
-                        format="YYYY-MM-DD", key=f"_ew_pdate_{wid}",
-                    )
-                    ed_delivery_date = st.date_input(
-                        "วันที่ส่งมอบ", value=_as_date(picked_w["date_of_delivery"]),
-                        format="YYYY-MM-DD", key=f"_ew_ddate_{wid}",
-                    )
-
-                ed_auto_expiry = customer_entry.compute_expiry_date(ed_purchase_date, ed_months)
-                ed_use_auto = st.checkbox(
-                    f"คำนวณวันหมดประกันใหม่อัตโนมัติ ({ed_auto_expiry or '—'})",
-                    value=False,
-                    key=f"_ew_auto_{wid}",
-                )
-                ed_expiry = None
-                if not ed_use_auto:
-                    ed_expiry = st.date_input(
-                        "วันหมดประกัน", value=_as_date(picked_w["expiry_date"]),
-                        format="YYYY-MM-DD", key=f"_ew_expiry_{wid}",
-                    )
-                ed_remark = st.text_area(
-                    "หมายเหตุ", placeholder="เช่น รายละเอียดเพิ่มเติมเกี่ยวกับการรับประกัน", value=picked_w["remark"] or "", height=80, key=f"_ew_remark_{wid}"
-                )
-                proof_col, upload_col = st.columns([1, 2])
-                with proof_col:
-                    st.markdown("**หลักฐานการซื้อปัจจุบัน**")
-                    render_proof(picked_w.get("proof_path"), key=f"_ew_proof_view_{wid}")
-                with upload_col:
-                    ed_proof = st.file_uploader(
-                        "อัปโหลดหลักฐานใหม่ (แทนที่ไฟล์เดิม) — JPG/PNG/WEBP/PDF ไม่เกิน 10 MB",
-                        type=["jpg", "jpeg", "png", "webp", "pdf"],
-                        key=f"_ew_proof_{wid}",
-                    )
-
-                if st.button("บันทึกการแก้ไข", key=f"_save_w_{wid}", use_container_width=True):
-                    ed_proof_path, error = (picked_w.get("proof_path"), None)
-                    if ed_proof is not None:
-                        ed_proof_path, error = file_manager.save_proof_file(ed_proof.getvalue())
-                    if not error:
-                        error = customer_entry.update_warranty(
-                            wid,
-                            actor=current_user,
-                            actor_role=current_role,
-                            registration_no=ed_reg,
-                            customer_id=cust_map[ed_owner],
-                            channel=ed_channel,
-                            certificate_no=ed_cert,
-                            category=ed_category,
-                            brand=ed_brand,
-                            model=ed_model,
-                            size=ed_size,
-                            sku=ed_sku,
-                            serial_no=ed_serial,
-                            label_no=ed_label,
-                            warranty_period_months=ed_months,
-                            date_of_purchase=ed_purchase_date,
-                            date_of_delivery=ed_delivery_date,
-                            purchase_channel=ed_purchase_channel,
-                            order_number=ed_order,
-                            so_number=ed_so,
-                            ref_id=ed_ref,
-                            proof_path=ed_proof_path,
-                            expiry_date=None if ed_use_auto else ed_expiry,
-                            remark=ed_remark,
-                        )
-                    if error:
-                        st.error(error)
-                    else:
-                        _flash_and_rerun(f"บันทึกการแก้ไขทะเบียน **{ed_reg.strip()}** เรียบร้อยแล้ว")
+                _warranty_editor(cust_map, picked_w)
 
                 status_now = picked_w.get("status") or "active"
                 st.markdown(f"**สถานะทะเบียน: {labels.warranty_status(status_now)}**")
