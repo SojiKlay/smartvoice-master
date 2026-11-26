@@ -1,5 +1,20 @@
 # SmartVoice — สถานะสำหรับพัฒนาต่อ
 
+## AWS — ผลตรวจหลัง Deploy งาน UX/UI ของ commit `44820a3`
+
+ผลที่ผู้ใช้ยืนยันหลัง Deploy
+
+- Active release คือ `release-xpFeTgT0` ตรวจ diff ของ source ที่ติดตั้งแล้วตรงกับ commit บน GitHub
+- บริการ SmartVoice, Caddy และ PostgreSQL อยู่ในสถานะ active ทั้ง local health และ HTTPS health ตอบ `ok` ฐาน PostgreSQL ใช้ schema version 2
+- ข้อมูล runtime มีขนาด 62 MB เท่าเดิม Backup ก่อน Deploy และการตรวจ SHA256 checksum ผ่าน ส่วน backup timer อยู่ในสถานะ active และยังไม่ได้ตั้งค่า S3
+- ตรวจหน้าจอลูกค้า ทะเบียนรับประกัน และใบสั่งขาย (SO) บน AWS แล้ว ยอดสุทธิ SO ที่แสดงก่อนบันทึกตรงกับค่าที่คาดไว้คือ 963.00
+
+งานที่ยังต้องตรวจหลัง Deploy
+
+- ตรวจ timezone ที่ใช้กำหนดวันที่เริ่มต้นในฟอร์ม และปรับการแสดงค่า `None` ในตาราง SO ในรอบถัดไป
+- ทดสอบการบันทึกข้อมูลจริงและตรวจ RBAC ครบทั้ง 4 บทบาท
+- ตรวจ backup ที่สร้างหลัง Deploy และทดสอบ restore
+
 ## ตรวจ PostgreSQL 16 ในเครื่อง (27 พฤศจิกายน 2026)
 
 - Fixture ยอมรับชื่อฐานตรงตัวเฉพาะ `smartvoice_test` และ `smartvoice_test_uxui` บน loopback และปฏิเสธ URL ที่มี query เพื่อป้องกันการเปลี่ยนปลายทาง ทดสอบเงื่อนไขก่อน migration และการเชื่อมต่อด้วย mock ผ่าน 6 กรณีใน 0.36 วินาที
